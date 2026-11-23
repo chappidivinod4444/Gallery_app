@@ -82,7 +82,15 @@ fun GalleryTheme(content: @Composable () -> Unit) {
             isAppearanceLightNavigationBars = !dark
         }
     }
-    MaterialTheme(colorScheme = scheme, typography = type) {
+    // Headings and body text carry the theme's text colour themselves, so they can never come out black on dark.
+    val on = scheme.onSurface
+    val typography = type.copy(
+        displayLarge = type.displayLarge.copy(color = on), displayMedium = type.displayMedium.copy(color = on), displaySmall = type.displaySmall.copy(color = on),
+        headlineLarge = type.headlineLarge.copy(color = on), headlineMedium = type.headlineMedium.copy(color = on), headlineSmall = type.headlineSmall.copy(color = on),
+        titleLarge = type.titleLarge.copy(color = on), titleMedium = type.titleMedium.copy(color = on), titleSmall = type.titleSmall.copy(color = on),
+        bodyLarge = type.bodyLarge.copy(color = on), bodyMedium = type.bodyMedium.copy(color = on),
+    )
+    MaterialTheme(colorScheme = scheme, typography = typography) {
         // Surface gives every text and icon the right colour for the theme (white on dark, black on light).
         Surface(color = scheme.background, contentColor = scheme.onBackground, content = content)
     }

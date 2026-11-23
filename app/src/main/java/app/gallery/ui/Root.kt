@@ -121,6 +121,7 @@ fun GalleryRoot() {
     LaunchedEffect(access) { if (access) MediaRepo.refresh() }
 
     Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface)) {
+      androidx.compose.runtime.CompositionLocalProvider(androidx.compose.material3.LocalContentColor provides MaterialTheme.colorScheme.onSurface) {
         when {
             locked -> LockScreen()
             !access -> Welcome(ask)
@@ -151,6 +152,7 @@ fun GalleryRoot() {
                 }
             }
         }
+      }
     }
 }
 
