@@ -20,6 +20,7 @@ import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.calculateZoom
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -153,9 +154,9 @@ fun durationText(ms: Long): String {
 
 // ---------------------------------------------------------------- the grid
 
-private sealed interface Row {
-    data class Header(val label: String, val items: List<Media>) : Row
-    data class Cell(val m: Media, val index: Int) : Row
+private sealed interface GridRow {
+    data class Header(val label: String, val items: List<Media>) : GridRow
+    data class Cell(val m: Media, val index: Int) : GridRow
 }
 
 /**
@@ -175,13 +176,13 @@ fun MediaGrid(
     val columns by Settings.columns.collectAsState()
     val byMonth = columns >= 6
     val rows = remember(list, grouped, byMonth) {
-        if (!grouped) list.mapIndexed { i, m -> Row.Cell(m, i) }
-        else buildList {
+        if (!grouped) list.mapIndexed { i, m -> GridRow.Cell(m, i) }
+        else buildList<GridRow> {
             var i = 0
             val groups = if (byMonth) list.groupBy { it.day.withDayOfMonth(1) } else list.groupBy { it.day }
             for ((d, items) in groups) {
-                add(Row.Header(if (byMonth) monthLabel(d) else dayLabel(d), items))
-                items.forEach { add(Row.Cell(it, i++)) }
+                add(GridRow.Header(if (byMonth) monthLabel(d) else dayLabel(d), items))
+                items.forEach { add(GridRow.Cell(it, i++)) }
             }
         }
     }
@@ -205,7 +206,7 @@ fun MediaGrid(
         val hit = state.layoutInfo.visibleItemsInfo.firstOrNull {
             p.x >= it.offset.x && p.x < it.offset.x + it.size.width && p.y >= it.offset.y && p.y < it.offset.y + it.size.height
         } ?: return null
-        return (rows.getOrNull(hit.index) as? Row.Cell)?.index
+        return (rows.getOrNull(hit.index) as? GridRow.Cell)?.index
     }
 
     fun selectRange(to: Int) {
@@ -273,12 +274,12 @@ fun MediaGrid(
         header()
         items(
             rows,
-            key = { r -> if (r is Row.Header) "h:" + r.label + r.items.first().id else (r as Row.Cell).m.id },
-            span = { r -> if (r is Row.Header) GridItemSpan(maxLineSpan) else GridItemSpan(1) },
-            contentType = { r -> if (r is Row.Header) 0 else 1 },
+            key = { r -> if (r is GridRow.Header) "h:" + r.label + r.items.first().id else (r as GridRow.Cell).m.id },
+            span = { r -> if (r is GridRow.Header) GridItemSpan(maxLineSpan) else GridItemSpan(1) },
+            contentType = { r -> if (r is GridRow.Header) 0 else 1 },
         ) { r ->
             when (r) {
-                is Row.Header -> {
+                is GridRow.Header -> {
                     val all = r.items.all { it.id in selection.map }
                     Row(
                         Modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp, top = 18.dp, bottom = 8.dp),
@@ -294,7 +295,7 @@ fun MediaGrid(
                         }
                     }
                 }
-                is Row.Cell -> MediaCell(
+                is GridRow.Cell -> MediaCell(
                     r.m, selected = r.m.id in selection.map, selecting = selection.active, fav = r.m.id in favs,
                     thumbPx = if (columns <= 2) 640 else if (columns <= 4) 384 else 256,
                     modifier = Modifier.animateItem(),

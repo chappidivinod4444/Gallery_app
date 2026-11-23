@@ -42,6 +42,9 @@ import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.Videocam
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -475,11 +478,11 @@ private fun Toggle(title: String, subtitle: String?, value: Boolean, onChange: (
 private fun Choice(title: String, options: List<String>, selected: Int, onPick: (Int) -> Unit) {
     Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 10.dp)) {
         Text(title, style = MaterialTheme.typography.bodyLarge)
-        androidx.compose.material3.SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth().padding(top = 8.dp)) {
+        SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth().padding(top = 8.dp)) {
             options.forEachIndexed { i, o ->
-                androidx.compose.material3.SegmentedButton(
+                SegmentedButton(
                     selected = i == selected, onClick = { onPick(i) },
-                    shape = androidx.compose.material3.SegmentedButtonDefaults.itemShape(i, options.size),
+                    shape = SegmentedButtonDefaults.itemShape(i, options.size),
                 ) { Text(o, maxLines = 1) }
             }
         }
