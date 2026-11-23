@@ -16,7 +16,7 @@ object Settings {
     val appLock = MutableStateFlow(false)
     /** Seconds away from the app before it locks again (0 = right away). */
     val lockAfter = MutableStateFlow(0)
-    val secureScreen = MutableStateFlow(true)
+    val secureScreen = MutableStateFlow(false)
     val columns = MutableStateFlow(4)
     val showVideosInPhotos = MutableStateFlow(true)
 
@@ -27,7 +27,7 @@ object Settings {
         amoled.value = p.getBoolean("amoled", false)
         appLock.value = p.getBoolean("lock", false)
         lockAfter.value = p.getInt("lockAfter", 0)
-        secureScreen.value = p.getBoolean("secure", true)
+        secureScreen.value = p.getBoolean("secure_v2", false)
         columns.value = p.getInt("columns", 4)
         showVideosInPhotos.value = p.getBoolean("videosInPhotos", true)
     }
@@ -37,7 +37,7 @@ object Settings {
     fun setAmoled(v: Boolean) { amoled.value = v; p.edit().putBoolean("amoled", v).apply() }
     fun setAppLock(v: Boolean) { appLock.value = v; p.edit().putBoolean("lock", v).apply() }
     fun setLockAfter(v: Int) { lockAfter.value = v; p.edit().putInt("lockAfter", v).apply() }
-    fun setSecure(v: Boolean) { secureScreen.value = v; p.edit().putBoolean("secure", v).apply() }
+    fun setSecure(v: Boolean) { secureScreen.value = v; p.edit().putBoolean("secure_v2", v).apply() }
     fun setColumns(v: Int) { columns.value = v.coerceIn(2, 15); p.edit().putInt("columns", columns.value).apply() }
     fun setVideosInPhotos(v: Boolean) { showVideosInPhotos.value = v; p.edit().putBoolean("videosInPhotos", v).apply() }
 }

@@ -59,6 +59,11 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.foundation.layout.size
+import androidx.compose.ui.draw.clip
+import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.CameraAlt
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -136,11 +141,27 @@ fun ViewerScreen(list: List<Media>, start: Int) {
         }
     }
 
+    // One player, for the video that's on screen.
+    val settled = items[pager.settledPage.coerceIn(0, items.lastIndex)]
+    val video = if (settled.isVideo) androidx.compose.runtime.key(settled.uri) { rememberVideo(settled.uri) } else null
+    val showVideo = video != null && current.uri == video.uri
+    // Controls hide by themselves while a video plays.
+    LaunchedEffect(chrome, video?.playing, video?.touched) {
+        if (chrome && video?.playing == true) { delay(3500); chrome = false }
+    }
+
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         HorizontalPager(pager, beyondViewportPageCount = 1, key = { items[it].id }, pageSpacing = 12.dp) { page ->
             val m = items[page]
-            if (m.isVideo) VideoPage(m, active = page == pager.settledPage, onTap = { chrome = !chrome })
-            else ZoomableImage(m, onTap = { chrome = !chrome; slideshow = false })
+            if (m.isVideo) {
+                if (video != null && video.uri == m.uri) VideoSurface(video, onTap = { chrome = !chrome })
+                else Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    AsyncImage(app.gallery.data.Thumb(m.uri, 1024), null, contentScale = ContentScale.Fit, modifier = Modifier.fillMaxSize())
+                    Box(Modifier.size(64.dp).clip(CircleShape).background(Color(0x99000000)), contentAlignment = Alignment.Center) {
+                        Icon(Icons.Rounded.PlayArrow, null, tint = Color.White, modifier = Modifier.size(36.dp))
+                    }
+                }
+            } else ZoomableImage(m, onTap = { chrome = !chrome; slideshow = false })
         }
 
         AnimatedVisibility(chrome, enter = fadeIn(), exit = fadeOut(), modifier = Modifier.align(Alignment.TopCenter)) {
@@ -154,6 +175,9 @@ fun ViewerScreen(list: List<Media>, start: Int) {
                     val dt = Instant.ofEpochMilli(current.date).atZone(ZoneId.systemDefault())
                     Text(dayLabel(dt.toLocalDate()), color = Color.White, style = MaterialTheme.typography.titleMedium)
                     Text(dt.format(DateTimeFormatter.ofPattern("h:mm a")), color = Color(0xCCFFFFFF), style = Caption)
+                }
+                if (showVideo) IconButton(onClick = { captureFrame(context, video!!, current.name, scope) }) {
+                    Icon(Icons.Rounded.CameraAlt, "Save this frame as a photo", tint = Color.White)
                 }
                 if (!external) IconButton(onClick = { info = true }) { Icon(Icons.Rounded.Info, "Details", tint = Color.White) }
                 Box {
@@ -174,9 +198,13 @@ fun ViewerScreen(list: List<Media>, start: Int) {
         }
 
         AnimatedVisibility(chrome, enter = fadeIn(), exit = fadeOut(), modifier = Modifier.align(Alignment.BottomCenter)) {
+          Column(
+              Modifier.fillMaxWidth().background(Brush.verticalGradient(listOf(Color.Transparent, Color(0x99000000), Color(0xCC000000))))
+                  .navigationBarsPadding().padding(top = 28.dp),
+          ) {
+            if (showVideo) VideoControls(video!!, current.name, Modifier.padding(bottom = 6.dp))
             Row(
-                Modifier.fillMaxWidth().background(Brush.verticalGradient(listOf(Color.Transparent, Color(0x99000000))))
-                    .navigationBarsPadding().padding(horizontal = 12.dp, vertical = 10.dp),
+                Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
                 horizontalArrangement = Arrangement.SpaceEvenly,
             ) {
                 ViewerAction(Icons.Rounded.Share, "Share") { Actions.share(context, listOf(current)) }
@@ -191,6 +219,7 @@ fun ViewerScreen(list: List<Media>, start: Int) {
                     }
                 }
             }
+          }
         }
     }
 
@@ -314,43 +343,6 @@ fun ZoomableBox(onTap: () -> Unit, content: @Composable () -> Unit) {
             },
         contentAlignment = Alignment.Center,
     ) { content() }
-}
-
-@Composable
-fun VideoPage(m: Media, active: Boolean, onTap: () -> Unit) {
-    VideoPlayerBox(m.uri, active, onTap) {
-        AsyncImage(app.gallery.data.Thumb(m.uri, 1024), null, contentScale = ContentScale.Fit, modifier = Modifier.fillMaxSize())
-    }
-}
-
-/** Plays a video with standard controls only while its page is on screen. */
-@Composable
-fun VideoPlayerBox(uri: android.net.Uri, active: Boolean, onTap: () -> Unit, placeholder: @Composable () -> Unit) {
-    val ctx = LocalContext.current
-    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-        if (!active) {
-            placeholder()
-        } else {
-            val player = remember(uri) {
-                ExoPlayer.Builder(ctx).build().apply {
-                    setMediaItem(MediaItem.fromUri(uri))
-                    prepare()
-                    playWhenReady = true
-                }
-            }
-            DisposableEffect(player) { onDispose { player.release() } }
-            AndroidView(
-                factory = { c ->
-                    PlayerView(c).apply {
-                        this.player = player
-                        setShowNextButton(false); setShowPreviousButton(false)
-                        setControllerVisibilityListener(PlayerView.ControllerVisibilityListener { onTap() })
-                    }
-                },
-                modifier = Modifier.fillMaxSize(),
-            )
-        }
-    }
 }
 
 @Composable

@@ -99,6 +99,7 @@ fun VaultTab() {
         onFail = { error = it },
     )
 
+    if (unlocked) SecureZone.Use()
     if (!unlocked) {
         LaunchedEffect(Unit) { if (AppLock.canUse(activity)) unlock() }
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -212,6 +213,7 @@ fun VaultViewer(start: Int) {
     val unlocked by Vault.unlocked.collectAsState()
     val items by Vault.items.collectAsState()
     if (!unlocked || items.isEmpty()) { LaunchedEffect(Unit) { Nav.back() }; return }
+    SecureZone.Use()
     val pager = rememberPagerState(initialPage = start.coerceIn(0, items.lastIndex)) { items.size }
     var chrome by remember { mutableStateOf(true) }
     Immersive(!chrome)
@@ -248,5 +250,18 @@ fun VaultViewer(start: Int) {
             "Encrypted • only visible here", color = Color(0xB3FFFFFF), style = Caption,
             modifier = Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(16.dp),
         )
+    }
+}
+
+/** Screens that must never show up in screenshots or the recent-apps preview (only the Vault). */
+object SecureZone {
+    val count = kotlinx.coroutines.flow.MutableStateFlow(0)
+
+    @Composable
+    fun Use() {
+        androidx.compose.runtime.DisposableEffect(Unit) {
+            count.value += 1
+            onDispose { count.value -= 1 }
+        }
     }
 }

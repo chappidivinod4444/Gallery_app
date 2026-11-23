@@ -53,10 +53,10 @@ class MainActivity : FragmentActivity() {
         enableEdgeToEdge()
         setContent { GalleryTheme { GalleryRoot() } }
         handle(intent)
-        // Hide the app's content from screenshots and the recent-apps screen when locked mode is on,
-        // and always while the Vault is open.
+        // Screenshots are allowed everywhere, except: on Vault screens, or when the person turns on
+        // "Hide content in recent apps" in Settings.
         lifecycleScope.launch {
-            combine(Settings.appLock, Settings.secureScreen, Vault.unlocked) { lock, secure, vault -> (lock && secure) || vault }
+            combine(Settings.secureScreen, app.gallery.ui.SecureZone.count) { secure, zones -> secure || zones > 0 }
                 .collect { on ->
                     if (on) window.setFlags(WindowManager.LayoutParams.FLAG_SECURE, WindowManager.LayoutParams.FLAG_SECURE)
                     else window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)

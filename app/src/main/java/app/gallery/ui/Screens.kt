@@ -585,14 +585,14 @@ fun SettingsScreen() {
                     Choice("Lock again after", listOf("Right away", "1 min", "5 min", "15 min"), listOf(0, 60, 300, 900).indexOf(lockAfter).coerceAtLeast(0)) {
                         Settings.setLockAfter(listOf(0, 60, 300, 900)[it])
                     }
-                    Toggle("Hide content in recent apps", "Also blocks screenshots", secure) { Settings.setSecure(it) }
                 }
+                Toggle("Block screenshots", "Hides the app in recent apps too. Off by default; the Vault is always protected.", secure) { Settings.setSecure(it) }
                 ListRow(null, "Vault", null, "Encrypted private album") { Nav.tab(Tab.Vault) }
             }
         }
         item {
             Text(
-                "The Vault always asks to unlock, is always hidden from screenshots, and closes when you leave the app. " +
+                "The Vault always asks to unlock, blocks screenshots only while it is open, and closes when you leave the app. " +
                     "This app has no internet permission: nothing ever leaves your phone.",
                 style = Caption, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(horizontal = 28.dp, vertical = 10.dp),
             )
