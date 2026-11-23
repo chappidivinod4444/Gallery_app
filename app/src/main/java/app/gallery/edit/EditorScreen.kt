@@ -28,6 +28,11 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.safeDrawingPadding
+import androidx.compose.foundation.gestures.calculatePan
+import androidx.compose.foundation.gestures.calculateZoom
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
@@ -115,6 +120,7 @@ private enum class Tool(val label: String, val icon: ImageVector) {
     Crop("Crop", Icons.Rounded.Crop),
     Adjust("Adjust", Icons.Rounded.Tune),
     Filters("Filters", Icons.Rounded.FilterVintage),
+    Effects("Effects", Icons.Rounded.AutoAwesome),
     Draw("Draw", Icons.Rounded.Brush),
     Text("Text", Icons.Rounded.TextFields),
     Stickers("Stickers", Icons.Rounded.EmojiEmotions),
@@ -150,7 +156,20 @@ private val adjustTools: List<Triple<String, ClosedFloatingPointRange<Float>, (A
     Triple("Grain", 0f..1f, { it.grain }),
 )
 
+private val effectTools: List<Triple<String, ClosedFloatingPointRange<Float>, (Adjust) -> Float>> = listOf(
+    Triple("Structure", 0f..1f, { it.structure }),
+    Triple("Drama", 0f..1f, { it.drama }),
+    Triple("Glow", 0f..1f, { it.glow }),
+    Triple("Lens blur", 0f..1f, { it.lensBlur }),
+    Triple("Tilt-shift", 0f..1f, { it.tiltShift }),
+    Triple("Vignette", 0f..1f, { it.vignette }),
+    Triple("Grain", 0f..1f, { it.grain }),
+    Triple("Fade", 0f..1f, { it.fade }),
+)
+
 private fun Adjust.with(name: String, v: Float): Adjust = when (name) {
+    "Structure" -> copy(structure = v); "Drama" -> copy(drama = v); "Glow" -> copy(glow = v)
+    "Lens blur" -> copy(lensBlur = v); "Tilt-shift" -> copy(tiltShift = v)
     "Exposure" -> copy(exposure = v); "Brightness" -> copy(brightness = v); "Contrast" -> copy(contrast = v)
     "Highlights" -> copy(highlights = v); "Shadows" -> copy(shadows = v); "Saturation" -> copy(saturation = v)
     "Vibrance" -> copy(vibrance = v); "Warmth" -> copy(warmth = v); "Tint" -> copy(tint = v)
@@ -235,9 +254,10 @@ private fun EditorContent(media: Media) {
 
     BackHandler { if (undo.isNotEmpty()) confirmExit = true else Nav.back() }
 
-    Column(Modifier.fillMaxSize().background(Color(0xFF0E0F13))) {
+    app.gallery.ui.Immersive(false)
+    Column(Modifier.fillMaxSize().background(Color(0xFF0E0F13)).safeDrawingPadding()) {
         // Top bar
-        Row(Modifier.fillMaxWidth().statusBarsPadding().padding(horizontal = 4.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+        Row(Modifier.fillMaxWidth().height(56.dp).padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = { if (undo.isNotEmpty()) confirmExit = true else Nav.back() }) { Icon(Icons.Rounded.Close, "Close", tint = Color.White) }
             Spacer(Modifier.weight(1f))
             IconButton(enabled = undo.isNotEmpty(), onClick = { redo.add(state); state = undo.removeAt(undo.lastIndex) }) {
@@ -284,8 +304,52 @@ private fun EditorContent(media: Media) {
             Spacer(Modifier.width(8.dp))
         }
 
-        // Picture
-        BoxWithConstraints(Modifier.weight(1f).fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp), contentAlignment = Alignment.Center) {
+        // Picture: pinch with two fingers to zoom in (up to 8×) and move around; tap "Fit" to go back.
+        var zoom by remember { mutableStateOf(1f) }
+        var pan by remember { mutableStateOf(Offset.Zero) }
+        var areaSize by remember { mutableStateOf(androidx.compose.ui.unit.IntSize.Zero) }
+        fun clampPan(p: Offset, z: Float): Offset {
+            val mx = areaSize.width * (z - 1f) / 2f; val my = areaSize.height * (z - 1f) / 2f
+            return Offset(p.x.coerceIn(-mx, mx), p.y.coerceIn(-my, my))
+        }
+        val panWithOneFinger = tool == Tool.Adjust || tool == Tool.Filters || tool == Tool.Effects || tool == Tool.Frame
+        Box(
+            Modifier.weight(1f).fillMaxWidth().clipToBounds()
+                .onSizeChanged { areaSize = it }
+                .pointerInput(panWithOneFinger) {
+                    awaitEachGesture {
+                        var multi = false
+                        while (true) {
+                            val ev = awaitPointerEvent(androidx.compose.ui.input.pointer.PointerEventPass.Initial)
+                            val n = ev.changes.count { it.pressed }
+                            if (n == 0) break
+                            if (n >= 2) {
+                                multi = true
+                                zoom = (zoom * ev.calculateZoom()).coerceIn(1f, 8f)
+                                pan = clampPan(pan + ev.calculatePan(), zoom)
+                                ev.changes.forEach { it.consume() }
+                            } else if (multi) {
+                                ev.changes.forEach { it.consume() }
+                            } else if (zoom > 1.01f && panWithOneFinger) {
+                                pan = clampPan(pan + ev.calculatePan(), zoom)
+                                ev.changes.forEach { it.consume() }
+                            }
+                        }
+                        if (zoom < 1.03f) { zoom = 1f; pan = Offset.Zero }
+                    }
+                }
+                .pointerInput(panWithOneFinger) {
+                    if (panWithOneFinger) detectTapGestures(onDoubleTap = { o ->
+                        if (zoom > 1.01f) { zoom = 1f; pan = Offset.Zero }
+                        else { zoom = 2.5f; pan = clampPan(Offset((areaSize.width / 2f - o.x) * 1.5f, (areaSize.height / 2f - o.y) * 1.5f), 2.5f) }
+                    })
+                },
+        ) {
+        BoxWithConstraints(
+            Modifier.fillMaxSize().padding(horizontal = 12.dp, vertical = 8.dp)
+                .graphicsLayer { scaleX = zoom; scaleY = zoom; translationX = pan.x; translationY = pan.y },
+            contentAlignment = Alignment.Center,
+        ) {
             val img = rendered
             if (loadError != null) Text(loadError!!, color = Color.White)
             else if (img == null) CircularProgressIndicator()
@@ -386,6 +450,13 @@ private fun EditorContent(media: Media) {
             }
         }
 
+        if (zoom > 1.01f) Text(
+            "Fit • ${(zoom * 100).roundToInt()}%", color = Color.White, style = Caption,
+            modifier = Modifier.align(Alignment.TopCenter).padding(top = 8.dp).clip(RoundedCornerShape(14.dp)).background(Color(0x99000000))
+                .clickable { zoom = 1f; pan = Offset.Zero }.padding(horizontal = 12.dp, vertical = 6.dp),
+        )
+        }
+
         // Tool panel
         Box(Modifier.fillMaxWidth().height(150.dp)) {
             when (tool) {
@@ -409,6 +480,12 @@ private fun EditorContent(media: Media) {
                     onAuto = { source?.let { commit(state.copy(adjust = Renderer.autoEnhance(it))) } },
                     onChange = { state = state.copy(adjust = it) },
                     onCommit = { before -> if (before != state.adjust) { undo.add(state.copy(adjust = before)); redo.clear() } },
+                )
+                Tool.Effects -> AdjustPanel(
+                    state.adjust, onAuto = null,
+                    onChange = { state = state.copy(adjust = it) },
+                    onCommit = { before -> if (before != state.adjust) { undo.add(state.copy(adjust = before)); redo.clear() } },
+                    tools = effectTools,
                 )
                 Tool.Filters -> FiltersPanel(
                     source, state.filter, state.filterStrength,
@@ -449,7 +526,7 @@ private fun EditorContent(media: Media) {
 
         // Tool tabs
         LazyRow(
-            Modifier.fillMaxWidth().navigationBarsPadding().padding(bottom = 8.dp),
+            Modifier.fillMaxWidth().padding(bottom = 6.dp),
             contentPadding = PaddingValues(horizontal = 10.dp),
             horizontalArrangement = Arrangement.spacedBy(4.dp),
         ) {
@@ -608,11 +685,14 @@ private fun PanelIcon(icon: ImageVector, label: String, onClick: () -> Unit, rot
 // ---------------------------------------------------------------- adjust
 
 @Composable
-private fun AdjustPanel(a: Adjust, onAuto: () -> Unit, onChange: (Adjust) -> Unit, onCommit: (Adjust) -> Unit) {
-    var current by remember { mutableStateOf("Exposure") }
+private fun AdjustPanel(
+    a: Adjust, onAuto: (() -> Unit)?, onChange: (Adjust) -> Unit, onCommit: (Adjust) -> Unit,
+    tools: List<Triple<String, ClosedFloatingPointRange<Float>, (Adjust) -> Float>> = adjustTools,
+) {
+    var current by remember(tools) { mutableStateOf(tools.first().first) }
     var before by remember { mutableStateOf(a) }
     var dragging by remember { mutableStateOf(false) }
-    val tool = adjustTools.first { it.first == current }
+    val tool = tools.firstOrNull { it.first == current } ?: tools.first()
     val value = tool.third(a)
     Column(Modifier.fillMaxWidth()) {
         Row(Modifier.padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -630,10 +710,10 @@ private fun AdjustPanel(a: Adjust, onAuto: () -> Unit, onChange: (Adjust) -> Uni
             modifier = Modifier.padding(horizontal = 16.dp),
         )
         LazyRow(contentPadding = PaddingValues(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            item {
+            if (onAuto != null) item {
                 FilterChip(selected = false, onClick = onAuto, label = { Text("Auto") }, leadingIcon = { Icon(Icons.Rounded.AutoAwesome, null, Modifier.size(16.dp)) })
             }
-            items(adjustTools) { (name, _, get) ->
+            items(tools) { (name, _, get) ->
                 val changed = get(a) != 0f
                 FilterChip(
                     selected = name == current, onClick = { current = name },

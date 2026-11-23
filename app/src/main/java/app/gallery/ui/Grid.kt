@@ -22,6 +22,10 @@ import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.foundation.layout.offset
+import androidx.compose.material.icons.rounded.UnfoldMore
+import kotlin.math.roundToInt
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -171,10 +175,11 @@ fun MediaGrid(
     grouped: Boolean = true,
     state: LazyGridState = rememberLazyGridState(),
     bottomPadding: Int = 120,
+    topPadding: androidx.compose.ui.unit.Dp = 0.dp,
     header: LazyGridScope.() -> Unit = {},
 ) {
     val columns by Settings.columns.collectAsState()
-    val byMonth = columns >= 6
+    val byMonth = columns >= 7
     val rows = remember(list, grouped, byMonth) {
         if (!grouped) list.mapIndexed { i, m -> GridRow.Cell(m, i) }
         else buildList<GridRow> {
@@ -220,30 +225,37 @@ fun MediaGrid(
         }
     }
 
+    Box(
+        Modifier
+            .fillMaxSize()
+            // Pinch with two fingers to zoom the grid in and out, like OnePlus / Google Photos.
+            .pointerInput(Unit) {
+                awaitEachGesture {
+                    var zoom = 1f
+                    var pinching = false
+                    while (true) {
+                        val ev = awaitPointerEvent(PointerEventPass.Initial)
+                        val down = ev.changes.count { it.pressed }
+                        if (down == 0) break
+                        if (down >= 2) {
+                            pinching = true
+                            zoom *= ev.calculateZoom()
+                            if (zoom > 1.22f) { stepColumns(-1); zoom = 1f }
+                            else if (zoom < 0.82f) { stepColumns(+1); zoom = 1f }
+                        }
+                        if (pinching) ev.changes.forEach { it.consume() }
+                    }
+                }
+            }
+    ) {
     LazyVerticalGrid(
         columns = GridCells.Fixed(columns),
         state = state,
-        contentPadding = PaddingValues(bottom = bottomPadding.dp),
-        horizontalArrangement = Arrangement.spacedBy(2.dp),
-        verticalArrangement = Arrangement.spacedBy(2.dp),
+        contentPadding = PaddingValues(top = topPadding, bottom = bottomPadding.dp),
+        horizontalArrangement = Arrangement.spacedBy(if (columns >= 7) 1.dp else 2.dp),
+        verticalArrangement = Arrangement.spacedBy(if (columns >= 7) 1.dp else 2.dp),
         modifier = Modifier
             .fillMaxSize()
-            // Pinch with two fingers to make pictures bigger or smaller.
-            .pointerInput(Unit) {
-                awaitEachGesture {
-                    awaitFirstDown(requireUnconsumed = false)
-                    var zoom = 1f
-                    do {
-                        val ev = awaitPointerEvent(PointerEventPass.Initial)
-                        if (ev.changes.count { it.pressed } >= 2) {
-                            zoom *= ev.calculateZoom()
-                            if (zoom > 1.3f) { Settings.setColumns(Settings.columns.value - 1); zoom = 1f }
-                            else if (zoom < 0.75f) { Settings.setColumns(Settings.columns.value + 1); zoom = 1f }
-                            ev.changes.forEach { it.consume() }
-                        }
-                    } while (ev.changes.any { it.pressed })
-                }
-            }
             // Long-press, then drag across pictures to select them all.
             .pointerInput(rows) {
                 val edge = with(density) { 90.dp.toPx() }
@@ -282,10 +294,15 @@ fun MediaGrid(
                 is GridRow.Header -> {
                     val all = r.items.all { it.id in selection.map }
                     Row(
-                        Modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp, top = 18.dp, bottom = 8.dp),
+                        Modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp, top = if (byMonth) 12.dp else 22.dp, bottom = if (byMonth) 6.dp else 10.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Text(r.label, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+                        Text(
+                            r.label,
+                            style = if (byMonth) MaterialTheme.typography.titleMedium else MaterialTheme.typography.headlineSmall,
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier.weight(1f),
+                        )
                         if (selection.active) {
                             Icon(
                                 if (all) Icons.Rounded.CheckCircle else Icons.Rounded.LibraryAddCheck, "Select day",
@@ -297,12 +314,89 @@ fun MediaGrid(
                 }
                 is GridRow.Cell -> MediaCell(
                     r.m, selected = r.m.id in selection.map, selecting = selection.active, fav = r.m.id in favs,
-                    thumbPx = if (columns <= 2) 640 else if (columns <= 4) 384 else 256,
+                    thumbPx = when { columns <= 2 -> 640; columns <= 4 -> 384; columns <= 7 -> 256; else -> 160 },
+                    compact = columns >= 7,
                     modifier = Modifier.animateItem(),
                     onClick = { if (selection.active) selection.toggle(r.m) else Nav.open(list, r.index) },
                     onLongClick = { selection.toggle(r.m) },
                 )
             }
+        }
+    }
+    FastScroller(state, rows.size) { idx ->
+        (rows.getOrNull(idx) as? GridRow.Cell)?.m?.day?.let { if (byMonth) monthLabel(it) else dayLabel(it) }
+            ?: (rows.getOrNull(idx) as? GridRow.Header)?.label
+    }
+    }
+}
+
+/** Zoom steps for the grid: big photos … tiny month overview. */
+private val levels = listOf(2, 3, 4, 5, 7, 10, 15)
+
+fun stepColumns(dir: Int) {
+    val now = Settings.columns.value
+    val i = levels.indexOfFirst { it >= now }.let { if (it < 0) levels.lastIndex else it }
+    Settings.setColumns(levels[(i + dir).coerceIn(0, levels.lastIndex)])
+}
+
+/** The draggable handle on the right edge for jumping through years of photos quickly. */
+@Composable
+private fun androidx.compose.foundation.layout.BoxScope.FastScroller(state: LazyGridState, total: Int, labelAt: (Int) -> String?) {
+    if (total < 60) return
+    val scope = rememberCoroutineScope()
+    var dragging by remember { mutableStateOf(false) }
+    var visible by remember { mutableStateOf(false) }
+    var trackH by remember { mutableStateOf(1f) }
+    val scrolling = state.isScrollInProgress
+    LaunchedEffect(scrolling, dragging) {
+        if (scrolling || dragging) visible = true else { delay(1500); visible = false }
+    }
+    val progress = if (dragging) null else state.firstVisibleItemIndex.toFloat() / (total - 1).coerceAtLeast(1)
+    var dragFrac by remember { mutableStateOf(0f) }
+    val frac = progress ?: dragFrac
+    val density = LocalDensity.current
+    val thumbH = with(density) { 56.dp.toPx() }
+    AnimatedVisibility(
+        visible, enter = fadeIn(), exit = fadeOut(),
+        modifier = Modifier.align(Alignment.TopEnd).fillMaxSize(),
+    ) {
+        Box(
+            Modifier.fillMaxSize().padding(top = 120.dp, bottom = 130.dp)
+                .pointerInput(Unit) { trackH = size.height.toFloat() }
+        ) {
+            val y = ((trackH - thumbH) * frac.coerceIn(0f, 1f))
+            if (dragging) labelAt((frac * (total - 1)).roundToInt())?.let { label ->
+                Text(
+                    label, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.align(Alignment.TopEnd)
+                        .offset { androidx.compose.ui.unit.IntOffset(-with(density) { 64.dp.roundToPx() }, y.roundToInt()) }
+                        .shadow(8.dp, RoundedCornerShape(20.dp))
+                        .clip(RoundedCornerShape(20.dp)).background(MaterialTheme.colorScheme.surfaceContainerHighest)
+                        .padding(horizontal = 16.dp, vertical = 10.dp),
+                )
+            }
+            Box(
+                Modifier.align(Alignment.TopEnd)
+                    .offset { androidx.compose.ui.unit.IntOffset(0, y.roundToInt()) }
+                    .padding(end = 6.dp)
+                    .size(40.dp, 56.dp)
+                    .shadow(6.dp, RoundedCornerShape(20.dp))
+                    .clip(RoundedCornerShape(20.dp))
+                    .background(MaterialTheme.colorScheme.surfaceContainerHighest)
+                    .pointerInput(total) {
+                        detectVerticalDragGestures(
+                            onDragStart = { dragging = true; dragFrac = state.firstVisibleItemIndex.toFloat() / (total - 1).coerceAtLeast(1) },
+                            onDragEnd = { dragging = false },
+                            onDragCancel = { dragging = false },
+                            onVerticalDrag = { ch, d ->
+                                ch.consume()
+                                dragFrac = (dragFrac + d / (trackH - thumbH)).coerceIn(0f, 1f)
+                                scope.launch { state.scrollToItem((dragFrac * (total - 1)).roundToInt()) }
+                            },
+                        )
+                    },
+                contentAlignment = Alignment.Center,
+            ) { Icon(Icons.Rounded.UnfoldMore, "Scroll", tint = MaterialTheme.colorScheme.onSurface) }
         }
     }
 }
@@ -316,6 +410,7 @@ fun MediaCell(
     fav: Boolean,
     thumbPx: Int,
     modifier: Modifier = Modifier,
+    compact: Boolean = false,
     onClick: () -> Unit,
     onLongClick: () -> Unit,
 ) {
@@ -337,7 +432,7 @@ fun MediaCell(
                 .clip(RoundedCornerShape(corner))
                 .background(MaterialTheme.colorScheme.surfaceContainerHigh),
         )
-        if (m.isVideo) Row(
+        if (m.isVideo && !compact) Row(
             Modifier.align(Alignment.BottomEnd).padding(inset + 5.dp)
                 .clip(RoundedCornerShape(8.dp)).background(Color(0x8C000000)).padding(horizontal = 5.dp, vertical = 2.dp),
             verticalAlignment = Alignment.CenterVertically,

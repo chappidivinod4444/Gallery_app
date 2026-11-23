@@ -38,7 +38,7 @@ object Settings {
     fun setAppLock(v: Boolean) { appLock.value = v; p.edit().putBoolean("lock", v).apply() }
     fun setLockAfter(v: Int) { lockAfter.value = v; p.edit().putInt("lockAfter", v).apply() }
     fun setSecure(v: Boolean) { secureScreen.value = v; p.edit().putBoolean("secure", v).apply() }
-    fun setColumns(v: Int) { columns.value = v.coerceIn(2, 7); p.edit().putInt("columns", columns.value).apply() }
+    fun setColumns(v: Int) { columns.value = v.coerceIn(2, 15); p.edit().putInt("columns", columns.value).apply() }
     fun setVideosInPhotos(v: Boolean) { showVideosInPhotos.value = v; p.edit().putBoolean("videosInPhotos", v).apply() }
 }
 

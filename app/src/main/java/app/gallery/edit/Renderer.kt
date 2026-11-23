@@ -106,6 +106,62 @@ object Renderer {
             repeat(3) { px = boxBlur(px, w, h, r) }
         }
         if (a.sharpen > 0f) px = sharpen(px, w, h, a.sharpen * 1.4f)
+        val side = min(w, h)
+        // Blurred copies used by the effects below (only made when needed).
+        val fine = if (a.structure > 0f) blurred(px, w, h, (side / 110f).roundToInt().coerceAtLeast(1)) else null
+        val wide = if (a.drama > 0f || a.glow > 0f) blurred(px, w, h, (side / 35f).roundToInt().coerceAtLeast(2)) else null
+        val soft = if (a.lensBlur > 0f || a.tiltShift > 0f) blurred(px, w, h, (side / 28f).roundToInt().coerceAtLeast(2)) else null
+        if (fine != null || wide != null || soft != null) {
+            val cxx = w / 2f; val cyy = h / 2f
+            val md = sqrt(cxx * cxx + cyy * cyy)
+            for (y in 0 until h) for (x in 0 until w) {
+                val i = y * w + x
+                val c = px[i]
+                var r = ((c shr 16) and 0xFF) / 255f; var g = ((c shr 8) and 0xFF) / 255f; var b = (c and 0xFF) / 255f
+                if (fine != null) {
+                    val f = fine[i]; val k = a.structure * 1.6f
+                    r += k * (r - ((f shr 16) and 0xFF) / 255f); g += k * (g - ((f shr 8) and 0xFF) / 255f); b += k * (b - (f and 0xFF) / 255f)
+                }
+                if (wide != null) {
+                    val wr = ((wide[i] shr 16) and 0xFF) / 255f; val wg = ((wide[i] shr 8) and 0xFF) / 255f; val wb = (wide[i] and 0xFF) / 255f
+                    if (a.drama > 0f) {
+                        val k = a.drama * 1.8f
+                        r += k * (r - wr); g += k * (g - wg); b += k * (b - wb)
+                        val l = 0.299f * r + 0.587f * g + 0.114f * b
+                        val ds = 1f - 0.35f * a.drama
+                        r = l + (r - l) * ds; g = l + (g - l) * ds; b = l + (b - l) * ds
+                    }
+                    if (a.glow > 0f) {
+                        val k = a.glow * 0.75f
+                        r = 1f - (1f - r) * (1f - k * wr); g = 1f - (1f - g) * (1f - k * wg); b = 1f - (1f - b) * (1f - k * wb)
+                    }
+                }
+                if (soft != null) {
+                    var t = 0f
+                    if (a.lensBlur > 0f) {
+                        val dx = x - cxx; val dy = y - cyy
+                        val d = sqrt(dx * dx + dy * dy) / md
+                        val e = ((d - 0.22f) / 0.5f).coerceIn(0f, 1f)
+                        t = max(t, a.lensBlur * e * e * (3 - 2 * e))
+                    }
+                    if (a.tiltShift > 0f) {
+                        val d = abs(y - cyy) / cyy
+                        val e = ((d - 0.25f) / 0.5f).coerceIn(0f, 1f)
+                        t = max(t, a.tiltShift * e * e * (3 - 2 * e))
+                    }
+                    if (t > 0f) {
+                        val s0 = soft[i]
+                        r += (((s0 shr 16) and 0xFF) / 255f - r) * t
+                        g += (((s0 shr 8) and 0xFF) / 255f - g) * t
+                        b += ((s0 and 0xFF) / 255f - b) * t
+                    }
+                }
+                px[i] = (c and -0x1000000) or
+                    ((r.coerceIn(0f, 1f) * 255f).roundToInt() shl 16) or
+                    ((g.coerceIn(0f, 1f) * 255f).roundToInt() shl 8) or
+                    (b.coerceIn(0f, 1f) * 255f).roundToInt()
+            }
+        }
         val rnd = java.util.Random(7)
         val cx = w / 2f; val cy = h / 2f
         val maxD = sqrt(cx * cx + cy * cy)
@@ -148,6 +204,12 @@ object Renderer {
             }
         }
         bmp.setPixels(px, 0, w, 0, 0, w, h)
+    }
+
+    private fun blurred(src: IntArray, w: Int, h: Int, r: Int): IntArray {
+        var out = boxBlur(src, w, h, r)
+        out = boxBlur(out, w, h, r)
+        return boxBlur(out, w, h, r)
     }
 
     /** Fast blur: averages each pixel with its neighbours (run a few times for a smooth result). */

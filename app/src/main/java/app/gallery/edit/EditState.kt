@@ -16,8 +16,15 @@ data class Adjust(
     val sharpen: Float = 0f,    // 0..1
     val blur: Float = 0f,       // 0..1
     val grain: Float = 0f,      // 0..1
+    // Effects (Snapseed-style), 0..1
+    val structure: Float = 0f,  // brings out texture and detail
+    val drama: Float = 0f,      // strong local contrast, moody look
+    val glow: Float = 0f,       // soft dreamy glow
+    val lensBlur: Float = 0f,   // blurs the edges, keeps the centre sharp (portrait look)
+    val tiltShift: Float = 0f,  // blurs top and bottom: "miniature" look
 ) {
-    val needsPixels get() = highlights != 0f || shadows != 0f || vibrance != 0f || vignette != 0f || sharpen != 0f || blur != 0f || grain != 0f
+    val needsPixels get() = highlights != 0f || shadows != 0f || vibrance != 0f || vignette != 0f || sharpen != 0f || blur != 0f || grain != 0f ||
+        structure != 0f || drama != 0f || glow != 0f || lensBlur != 0f || tiltShift != 0f
 }
 
 /** A point in 0..1 coordinates of the finished (cropped) picture. */

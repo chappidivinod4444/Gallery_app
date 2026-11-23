@@ -41,6 +41,14 @@ import androidx.compose.material.icons.rounded.Screenshot
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.Videocam
+import androidx.compose.material.icons.rounded.GridView
+import androidx.compose.material.icons.rounded.FilterList
+import androidx.compose.material.icons.rounded.MoreVert
+import androidx.compose.material.icons.rounded.Lock
+import androidx.compose.ui.draw.shadow
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.asPaddingValues
+import androidx.compose.foundation.layout.statusBars
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
@@ -84,6 +92,8 @@ import coil3.compose.AsyncImage
 import java.time.format.DateTimeFormatter
 import java.util.Locale
 
+enum class PhotoFilter(val label: String) { All("All items"), Photos("Photos only"), Videos("Videos only"), Favorites("Favourites") }
+
 @Composable
 fun MainScreen(tab: Tab, onAskAccess: () -> Unit) {
     val selection = remember(tab) { Selection() }
@@ -92,22 +102,120 @@ fun MainScreen(tab: Tab, onAskAccess: () -> Unit) {
     val all by MediaRepo.all.collectAsState()
     val favIds by Favorites.ids.collectAsState()
     val videosInPhotos by Settings.showVideosInPhotos.collectAsState()
+    var filter by remember { mutableStateOf(PhotoFilter.All) }
     val visible = when (tab) {
-        Tab.Photos -> if (videosInPhotos) all else all.filter { !it.isVideo }
+        Tab.Photos -> when (filter) {
+            PhotoFilter.All -> if (videosInPhotos) all else all.filter { !it.isVideo }
+            PhotoFilter.Photos -> all.filter { !it.isVideo }
+            PhotoFilter.Videos -> all.filter { it.isVideo }
+            PhotoFilter.Favorites -> all.filter { it.id in favIds }
+        }
         Tab.Favorites -> all.filter { it.id in favIds }
         else -> emptyList()
     }
     Box(Modifier.fillMaxSize()) {
         when (tab) {
-            Tab.Photos -> PhotosTab(visible, selection, onAskAccess)
+            Tab.Photos -> PhotosTab(visible, selection, filter, onAskAccess)
             Tab.Albums -> AlbumsTab(all)
             Tab.Favorites -> FavoritesTab(visible, selection)
             Tab.Vault -> VaultTab()
         }
         if (selection.active) Box(Modifier.align(Alignment.TopCenter)) { SelectionTopBar(selection, visible) }
-        Box(Modifier.align(Alignment.BottomCenter)) {
-            if (selection.active) SelectionActions(selection)
-            else if (!(tab == Tab.Vault && VaultSelection.map.isNotEmpty())) NavBar(tab, onTab = { VaultSelection.map.clear(); Nav.tab(it) })
+        Box(Modifier.align(Alignment.BottomCenter).fillMaxWidth()) {
+            if (selection.active) Box(Modifier.align(Alignment.Center)) { SelectionActions(selection) }
+            else if (!(tab == Tab.Vault && VaultSelection.map.isNotEmpty())) BottomChrome(tab, filter) { filter = it }
+        }
+    }
+}
+
+/** Bottom of the main screen, OnePlus-style: grid size · Photos | Albums · filter. */
+@Composable
+private fun BottomChrome(tab: Tab, filter: PhotoFilter, onFilter: (PhotoFilter) -> Unit) {
+    var menu by remember { mutableStateOf(false) }
+    Row(
+        Modifier.fillMaxWidth().navigationBarsPadding().padding(start = 16.dp, end = 16.dp, bottom = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        RoundButton(Icons.Rounded.GridView, "Grid size", visible = tab == Tab.Photos || tab == Tab.Favorites) {
+            // Cycle through comfortable sizes: 3 → 5 → 7 → 15 → 3
+            val next = when (Settings.columns.value) { in 0..3 -> 5; in 4..5 -> 7; in 6..10 -> 15; else -> 3 }
+            Settings.setColumns(next)
+        }
+        Spacer(Modifier.weight(1f))
+        Row(
+            Modifier.shadow(12.dp, RoundedCornerShape(30.dp)).clip(RoundedCornerShape(30.dp))
+                .background(MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.96f)).padding(5.dp),
+        ) {
+            listOf(Tab.Photos to "Photos", Tab.Albums to "Albums").forEach { (t, label) ->
+                val on = t == tab
+                Text(
+                    label, style = MaterialTheme.typography.titleMedium,
+                    color = if (on) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.clip(RoundedCornerShape(26.dp))
+                        .background(if (on) MaterialTheme.colorScheme.surfaceContainerHighest else Color.Transparent)
+                        .clickable { VaultSelection.map.clear(); Nav.tab(t) }
+                        .padding(horizontal = 22.dp, vertical = 11.dp),
+                )
+            }
+        }
+        Spacer(Modifier.weight(1f))
+        Box {
+            RoundButton(Icons.Rounded.FilterList, "Filter", visible = tab == Tab.Photos, highlighted = filter != PhotoFilter.All) { menu = true }
+            androidx.compose.material3.DropdownMenu(menu, { menu = false }) {
+                PhotoFilter.entries.forEach { f ->
+                    androidx.compose.material3.DropdownMenuItem(
+                        text = { Text(f.label, fontWeight = if (f == filter) FontWeight.Bold else FontWeight.Normal) },
+                        onClick = { menu = false; onFilter(f) },
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun RoundButton(icon: ImageVector, label: String, visible: Boolean = true, highlighted: Boolean = false, onClick: () -> Unit) {
+    Box(
+        Modifier.size(52.dp)
+            .then(if (visible) Modifier.shadow(10.dp, androidx.compose.foundation.shape.CircleShape) else Modifier)
+            .clip(androidx.compose.foundation.shape.CircleShape)
+            .background(
+                if (!visible) Color.Transparent
+                else if (highlighted) MaterialTheme.colorScheme.primaryContainer
+                else MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.96f)
+            )
+            .clickable(enabled = visible, onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) { if (visible) Icon(icon, label, tint = MaterialTheme.colorScheme.onSurface) }
+}
+
+/** Title floating over the photos with round buttons, like OnePlus Photos. */
+@Composable
+fun FloatingTitle(title: String, menu: @Composable () -> Unit = {}) {
+    Row(
+        Modifier.fillMaxWidth()
+            .background(Brush.verticalGradient(listOf(MaterialTheme.colorScheme.surface.copy(alpha = 0.92f), MaterialTheme.colorScheme.surface.copy(alpha = 0.6f), Color.Transparent)))
+            .statusBarsPadding().padding(start = 20.dp, end = 12.dp, top = 10.dp, bottom = 22.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(title, style = MaterialTheme.typography.displaySmall, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+        RoundButton(Icons.Rounded.Search, "Search") { Nav.go(Route.Search) }
+        Spacer(Modifier.width(10.dp))
+        menu()
+    }
+}
+
+@Composable
+private fun MoreMenu() {
+    var open by remember { mutableStateOf(false) }
+    Box {
+        RoundButton(Icons.Rounded.MoreVert, "More") { open = true }
+        androidx.compose.material3.DropdownMenu(open, { open = false }) {
+            androidx.compose.material3.DropdownMenuItem(text = { Text("Videos") }, onClick = { open = false; Nav.go(Route.Videos) })
+            androidx.compose.material3.DropdownMenuItem(text = { Text("Favourites") }, onClick = { open = false; Nav.tab(Tab.Favorites) })
+            androidx.compose.material3.DropdownMenuItem(text = { Text("Vault") }, onClick = { open = false; Nav.tab(Tab.Vault) })
+            androidx.compose.material3.DropdownMenuItem(text = { Text("Trash") }, onClick = { open = false; Nav.go(Route.Trash) })
+            androidx.compose.material3.DropdownMenuItem(text = { Text("Settings") }, onClick = { open = false; Nav.go(Route.Settings) })
         }
     }
 }
@@ -119,35 +227,25 @@ private fun TitleActions() {
 }
 
 @Composable
-private fun PhotosTab(list: List<Media>, selection: Selection, onAskAccess: () -> Unit) {
+private fun PhotosTab(list: List<Media>, selection: Selection, filter: PhotoFilter, onAskAccess: () -> Unit) {
     val loaded by MediaRepo.loaded.collectAsState()
     val context = LocalContext.current
     val partial = remember { !hasFullAccess(context) }
-    MediaGrid(list, selection, header = {
-        bigTitle("Photos", if (list.isNotEmpty()) "${list.size} items" else null) { TitleActions() }
-        item(span = { GridItemSpan(maxLineSpan) }, key = "chips") {
-            LazyRow(contentPadding = PaddingValues(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(bottom = 4.dp)) {
-                item { QuickChip(Icons.Rounded.Videocam, "Videos") { Nav.go(Route.Videos) } }
-                item {
-                    QuickChip(Icons.Rounded.Screenshot, "Screenshots") {
-                        val a = MediaRepo.albums(MediaRepo.all.value).firstOrNull { it.name.contains("screenshot", true) }
-                        if (a != null) Nav.go(Route.AlbumView(a.id, a.name)) else Toast.makeText(context, "No screenshots", Toast.LENGTH_SHORT).show()
-                    }
-                }
-                item { QuickChip(Icons.Rounded.Favorite, "Favourites") { Nav.tab(Tab.Favorites) } }
-                item { QuickChip(Icons.Rounded.Delete, "Trash") { Nav.go(Route.Trash) } }
+    Box(Modifier.fillMaxSize()) {
+        val top = androidx.compose.foundation.layout.WindowInsets.statusBars.asPaddingValues().calculateTopPadding() + 92.dp
+        MediaGrid(list, selection, topPadding = top, header = {
+            if (partial) item(span = { GridItemSpan(maxLineSpan) }, key = "partial") {
+                Row(
+                    Modifier.fillMaxWidth().padding(16.dp).clip(RoundedCornerShape(16.dp)).background(MaterialTheme.colorScheme.secondaryContainer)
+                        .clickable(onClick = onAskAccess).padding(16.dp),
+                ) { Text("You've shared only some photos. Tap to allow all photos and videos.", color = MaterialTheme.colorScheme.onSecondaryContainer) }
             }
-        }
-        if (partial) item(span = { GridItemSpan(maxLineSpan) }, key = "partial") {
-            Row(
-                Modifier.fillMaxWidth().padding(16.dp).clip(RoundedCornerShape(16.dp)).background(MaterialTheme.colorScheme.secondaryContainer)
-                    .clickable(onClick = onAskAccess).padding(16.dp),
-            ) { Text("You've shared only some photos. Tap to allow all photos and videos.", color = MaterialTheme.colorScheme.onSecondaryContainer) }
-        }
-        if (loaded && list.isEmpty()) item(span = { GridItemSpan(maxLineSpan) }, key = "empty") {
-            EmptyState(Icons.Rounded.PhotoLibrary, "No photos yet", "Photos and videos you take or save will show up here.")
-        }
-    })
+            if (loaded && list.isEmpty()) item(span = { GridItemSpan(maxLineSpan) }, key = "empty") {
+                EmptyState(Icons.Rounded.PhotoLibrary, if (filter == PhotoFilter.All) "No photos yet" else "Nothing here", "Photos and videos you take or save will show up here.")
+            }
+        })
+        if (!selection.active) FloatingTitle(if (filter == PhotoFilter.All || filter == PhotoFilter.Photos) "Photos" else filter.label.substringBefore(" ")) { MoreMenu() }
+    }
 }
 
 @Composable
@@ -198,6 +296,7 @@ private fun AlbumsTab(all: List<Media>) {
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 UtilityTile(Icons.Rounded.Videocam, "Videos", "${videos.size}", Modifier.weight(1f)) { Nav.go(Route.Videos) }
                 UtilityTile(Icons.Rounded.Favorite, "Favourites", "${Favorites.ids.value.size}", Modifier.weight(1f)) { Nav.tab(Tab.Favorites) }
+                UtilityTile(Icons.Rounded.Lock, "Vault", "Private", Modifier.weight(1f)) { Nav.tab(Tab.Vault) }
                 UtilityTile(Icons.Rounded.Delete, "Trash", "${trash.size}", Modifier.weight(1f)) { Nav.go(Route.Trash) }
             }
         }
