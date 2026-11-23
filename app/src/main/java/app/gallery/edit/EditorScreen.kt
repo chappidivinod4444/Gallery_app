@@ -125,7 +125,7 @@ fun loadBitmap(c: android.content.Context, uri: Uri, maxSide: Int): Bitmap {
 @Composable
 fun EditorScreen(media: Media) {
     MaterialTheme(colorScheme = darkColorScheme(primary = Ed.accent, surface = Ed.panel, background = Ed.bg, surfaceContainerHigh = Ed.panel)) {
-        EditorContent(media)
+        androidx.compose.runtime.CompositionLocalProvider(androidx.compose.material3.LocalContentColor provides Ed.text) { EditorContent(media) }
     }
 }
 
