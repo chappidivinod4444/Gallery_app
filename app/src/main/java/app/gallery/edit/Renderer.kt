@@ -1,22 +1,25 @@
 package app.gallery.edit
 
 import android.graphics.Bitmap
+import android.graphics.BlendMode
+import android.graphics.BlurMaskFilter
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.ColorMatrix
 import android.graphics.ColorMatrixColorFilter
+import android.graphics.DashPathEffect
 import android.graphics.Matrix
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.RectF
 import android.graphics.Typeface
-import kotlin.math.abs
+import kotlin.math.atan2
 import kotlin.math.cos
+import kotlin.math.hypot
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
 import kotlin.math.sin
-import kotlin.math.sqrt
 
 /** Turns the original picture plus an [EditState] into the finished picture. */
 object Renderer {
@@ -24,31 +27,76 @@ object Renderer {
     /** Size of the picture after 90° turns (before cropping). */
     fun rotatedSize(w: Int, h: Int, s: EditState): Pair<Int, Int> = if (s.rotation % 180 == 0) w to h else h to w
 
-    /** How much to enlarge a straightened picture so no empty corners show. */
-    fun straightenScale(rw: Int, rh: Int, degrees: Float): Float {
-        val a = Math.toRadians(abs(degrees).toDouble())
-        val c = cos(a); val sn = sin(a)
-        return max((rw * c + rh * sn) / rw, (rw * sn + rh * c) / rh).toFloat()
+    /**
+     * Source pixels → frame pixels (rw × rh): flip, turn, straighten, fix perspective, then zoom in just enough
+     * that no empty corners show.
+     */
+    fun frameMatrix(sw: Int, sh: Int, s: EditState): Matrix {
+        val (rw0, rh0) = rotatedSize(sw, sh, s)
+        val rw = rw0.toFloat(); val rh = rh0.toFloat()
+        val m = Matrix().apply {
+            postTranslate(-sw / 2f, -sh / 2f)
+            postScale(if (s.flipH) -1f else 1f, if (s.flipV) -1f else 1f)
+            postRotate(s.rotation + s.straighten)
+            postTranslate(rw / 2f, rh / 2f)
+        }
+        val pv = s.f(Params.pv); val ph = s.f(Params.ph)
+        if (pv != 0f || ph != 0f) {
+            val d = 0.25f
+            val tx = max(0f, pv) * d * rw; val bx = max(0f, -pv) * d * rw
+            val ly = max(0f, ph) * d * rh; val ry = max(0f, -ph) * d * rh
+            val src = floatArrayOf(0f, 0f, rw, 0f, rw, rh, 0f, rh)
+            val dst = floatArrayOf(-tx, -ly, rw + tx, -ry, rw + bx, rh + ry, -bx, rh + ly)
+            val p = Matrix(); p.setPolyToPoly(src, 0, dst, 0, 4)
+            m.postConcat(p)
+        }
+        val q = floatArrayOf(0f, 0f, sw.toFloat(), 0f, sw.toFloat(), sh.toFloat(), 0f, sh.toFloat())
+        m.mapPoints(q)
+        val k = coverScale(q, rw, rh)
+        if (k != 1f) m.postScale(k, k, rw / 2f, rh / 2f)
+        return m
     }
 
-    fun render(src: Bitmap, s: EditState, withOverlays: Boolean = true): Bitmap {
+    /** Smallest zoom of the quad [q] (about the frame centre) that covers the whole rw × rh frame. */
+    private fun coverScale(q: FloatArray, rw: Float, rh: Float): Float {
+        val cx = rw / 2f; val cy = rh / 2f
+        val corners = floatArrayOf(0f, 0f, rw, 0f, rw, rh, 0f, rh)
+        fun covers(k: Float): Boolean {
+            var sign = 0
+            for (c in 0 until 4) {
+                val px = corners[c * 2]; val py = corners[c * 2 + 1]
+                for (e in 0 until 4) {
+                    val ax = cx + (q[e * 2] - cx) * k; val ay = cy + (q[e * 2 + 1] - cy) * k
+                    val n = (e + 1) % 4
+                    val bx = cx + (q[n * 2] - cx) * k; val by = cy + (q[n * 2 + 1] - cy) * k
+                    val cross = (bx - ax) * (py - ay) - (by - ay) * (px - ax)
+                    val sg = if (cross > 0.01f) 1 else if (cross < -0.01f) -1 else 0
+                    if (sg != 0) { if (sign == 0) sign = sg else if (sg != sign) return false }
+                }
+            }
+            return true
+        }
+        if (covers(1f)) return 1f
+        var lo = 1f; var hi = 6f
+        repeat(28) { val mid = (lo + hi) / 2f; if (covers(mid)) hi = mid else lo = mid }
+        return hi
+    }
+
+    /**
+     * Draws the finished picture. [photos] gives the bitmaps of added photo layers. Without [overlays] only the
+     * picture itself is drawn; without [frame] the border is left off.
+     */
+    fun render(
+        src: Bitmap, s: EditState, photos: (String) -> Bitmap? = { null },
+        overlays: Boolean = true, frame: Boolean = true,
+    ): Bitmap {
         val (rw, rh) = rotatedSize(src.width, src.height, s)
         val ow = (rw * s.crop.w).roundToInt().coerceAtLeast(1)
         val oh = (rh * s.crop.h).roundToInt().coerceAtLeast(1)
+        val m = frameMatrix(src.width, src.height, s)
+        m.postTranslate(-s.crop.l * rw, -s.crop.t * rh)
 
-        // 1. Turn, flip, straighten, crop — and colour — in one drawing pass.
-        val m = Matrix().apply {
-            postTranslate(-src.width / 2f, -src.height / 2f)
-            postScale(if (s.flipH) -1f else 1f, if (s.flipV) -1f else 1f)
-            postRotate(s.rotation.toFloat())
-            if (s.straighten != 0f) {
-                postRotate(s.straighten)
-                val k = straightenScale(rw, rh, s.straighten)
-                postScale(k, k)
-            }
-            postTranslate(rw / 2f, rh / 2f)
-            postTranslate(-s.crop.l * rw, -s.crop.t * rh)
-        }
+        // 1. Geometry and the simple colour changes in one drawing pass.
         val out = Bitmap.createBitmap(ow, oh, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(out)
         canvas.drawColor(Color.BLACK)
@@ -56,33 +104,42 @@ object Renderer {
         paint.colorFilter = ColorMatrixColorFilter(colorMatrix(s))
         canvas.drawBitmap(src, m, paint)
 
-        // 2. Effects that need each pixel: light/shadow recovery, vibrance, sharpen, blur, vignette, grain.
-        if (s.adjust.needsPixels) pixelPass(out, s.adjust)
+        // 2. Healing, then everything that works pixel by pixel.
+        if (s.heals.isNotEmpty() || needsPixels(s)) {
+            var px = IntArray(ow * oh)
+            out.getPixels(px, 0, ow, 0, 0, ow, oh)
+            if (s.heals.isNotEmpty()) Heal.apply(px, ow, oh, s)
+            px = Pixels.process(px, ow, oh, s)
+            out.setPixels(px, 0, ow, 0, 0, ow, oh)
+        }
 
-        if (!withOverlays) return out
-
-        // 3. Drawings, text and stickers on top.
-        drawOverlays(canvas, ow, oh, s)
-        if (s.watermark.isNotBlank()) drawWatermark(canvas, ow, oh, s.watermark)
-
-        // 4. Frame around the picture.
-        return applyFrame(out, s.frame)
+        if (overlays) {
+            for (l in s.photos) photos(l.uri)?.let { drawPhoto(canvas, ow, oh, l, it) }
+            drawOverlays(canvas, ow, oh, s)
+            if (s.watermark.isNotBlank()) drawWatermark(canvas, ow, oh, s.watermark)
+        }
+        return if (frame) applyFrame(out, s) else out
     }
 
+    private val colorOnly = setOf(
+        Params.exposure.key, Params.brightness.key, Params.contrast.key, Params.saturation.key, Params.warmth.key,
+        Params.tint.key, Params.temp.key, Params.wbTint.key, Params.pv.key, Params.ph.key, Params.frameSize.key,
+    )
+
+    private fun needsPixels(s: EditState) =
+        s.v.keys.any { it !in colorOnly } || !s.curves.isIdentity || s.points.isNotEmpty() || s.masks.isNotEmpty()
+
     fun colorMatrix(s: EditState): ColorMatrix {
-        val a = s.adjust
         val cm = ColorMatrix()
-        val e = Math.pow(2.0, a.exposure.toDouble()).toFloat()
-        cm.postConcat(scale(e, e, e, 0f))
-        if (a.brightness != 0f) cm.postConcat(scale(1f, 1f, 1f, a.brightness * 60f))
-        if (a.contrast != 0f) cm.postConcat(contrast(1f + a.contrast * 0.6f))
-        if (a.saturation != 0f) cm.postConcat(ColorMatrix().apply { setSaturation(1f + a.saturation) })
-        if (a.warmth != 0f) cm.postConcat(scale(1f + 0.12f * a.warmth, 1f, 1f - 0.12f * a.warmth, 0f))
-        if (a.tint != 0f) cm.postConcat(scale(1f + 0.04f * a.tint, 1f - 0.10f * a.tint, 1f + 0.04f * a.tint, 0f))
-        if (a.fade != 0f) {
-            cm.postConcat(contrast(1f - 0.25f * a.fade))
-            cm.postConcat(scale(1f, 1f, 1f, 30f * a.fade))
-        }
+        val e = Math.pow(2.0, s.f(Params.exposure).toDouble()).toFloat()
+        if (e != 1f) cm.postConcat(scale(e, e, e, 0f))
+        s.f(Params.brightness).let { if (it != 0f) { cm.postConcat(scale(1f + 0.25f * it, 1f + 0.25f * it, 1f + 0.25f * it, it * 30f)) } }
+        s.f(Params.contrast).let { if (it != 0f) cm.postConcat(contrast(1f + it * 0.55f)) }
+        s.f(Params.saturation).let { if (it != 0f) cm.postConcat(ColorMatrix().apply { setSaturation(1f + it) }) }
+        val warm = s.f(Params.warmth) + s.f(Params.temp)
+        if (warm != 0f) cm.postConcat(scale(1f + 0.12f * warm, 1f + 0.01f * warm, 1f - 0.12f * warm, 0f))
+        val tint = s.f(Params.tint) + s.f(Params.wbTint)
+        if (tint != 0f) cm.postConcat(scale(1f + 0.05f * tint, 1f - 0.11f * tint, 1f + 0.05f * tint, 0f))
         if (s.filter != "Original") cm.postConcat(Filters.blended(s.filter, s.filterStrength))
         return cm
     }
@@ -96,207 +153,92 @@ object Renderer {
         return ColorMatrix(floatArrayOf(c, 0f, 0f, 0f, t, 0f, c, 0f, 0f, t, 0f, 0f, c, 0f, t, 0f, 0f, 0f, 1f, 0f))
     }
 
-    private fun pixelPass(bmp: Bitmap, a: Adjust) {
-        val w = bmp.width
-        val h = bmp.height
-        var px = IntArray(w * h)
-        bmp.getPixels(px, 0, w, 0, 0, w, h)
-        if (a.blur > 0f) {
-            val r = (a.blur * min(w, h) / 45f).roundToInt().coerceAtLeast(1)
-            repeat(3) { px = boxBlur(px, w, h, r) }
-        }
-        if (a.sharpen > 0f) px = sharpen(px, w, h, a.sharpen * 1.4f)
-        val side = min(w, h)
-        // Blurred copies used by the effects below (only made when needed).
-        val fine = if (a.structure > 0f) blurred(px, w, h, (side / 110f).roundToInt().coerceAtLeast(1)) else null
-        val wide = if (a.drama > 0f || a.glow > 0f) blurred(px, w, h, (side / 35f).roundToInt().coerceAtLeast(2)) else null
-        val soft = if (a.lensBlur > 0f || a.tiltShift > 0f) blurred(px, w, h, (side / 28f).roundToInt().coerceAtLeast(2)) else null
-        if (fine != null || wide != null || soft != null) {
-            val cxx = w / 2f; val cyy = h / 2f
-            val md = sqrt(cxx * cxx + cyy * cyy)
-            for (y in 0 until h) for (x in 0 until w) {
-                val i = y * w + x
-                val c = px[i]
-                var r = ((c shr 16) and 0xFF) / 255f; var g = ((c shr 8) and 0xFF) / 255f; var b = (c and 0xFF) / 255f
-                if (fine != null) {
-                    val f = fine[i]; val k = a.structure * 1.6f
-                    r += k * (r - ((f shr 16) and 0xFF) / 255f); g += k * (g - ((f shr 8) and 0xFF) / 255f); b += k * (b - (f and 0xFF) / 255f)
-                }
-                if (wide != null) {
-                    val wr = ((wide[i] shr 16) and 0xFF) / 255f; val wg = ((wide[i] shr 8) and 0xFF) / 255f; val wb = (wide[i] and 0xFF) / 255f
-                    if (a.drama > 0f) {
-                        val k = a.drama * 1.8f
-                        r += k * (r - wr); g += k * (g - wg); b += k * (b - wb)
-                        val l = 0.299f * r + 0.587f * g + 0.114f * b
-                        val ds = 1f - 0.35f * a.drama
-                        r = l + (r - l) * ds; g = l + (g - l) * ds; b = l + (b - l) * ds
-                    }
-                    if (a.glow > 0f) {
-                        val k = a.glow * 0.75f
-                        r = 1f - (1f - r) * (1f - k * wr); g = 1f - (1f - g) * (1f - k * wg); b = 1f - (1f - b) * (1f - k * wb)
-                    }
-                }
-                if (soft != null) {
-                    var t = 0f
-                    if (a.lensBlur > 0f) {
-                        val dx = x - cxx; val dy = y - cyy
-                        val d = sqrt(dx * dx + dy * dy) / md
-                        val e = ((d - 0.22f) / 0.5f).coerceIn(0f, 1f)
-                        t = max(t, a.lensBlur * e * e * (3 - 2 * e))
-                    }
-                    if (a.tiltShift > 0f) {
-                        val d = abs(y - cyy) / cyy
-                        val e = ((d - 0.25f) / 0.5f).coerceIn(0f, 1f)
-                        t = max(t, a.tiltShift * e * e * (3 - 2 * e))
-                    }
-                    if (t > 0f) {
-                        val s0 = soft[i]
-                        r += (((s0 shr 16) and 0xFF) / 255f - r) * t
-                        g += (((s0 shr 8) and 0xFF) / 255f - g) * t
-                        b += ((s0 and 0xFF) / 255f - b) * t
-                    }
-                }
-                px[i] = (c and -0x1000000) or
-                    ((r.coerceIn(0f, 1f) * 255f).roundToInt() shl 16) or
-                    ((g.coerceIn(0f, 1f) * 255f).roundToInt() shl 8) or
-                    (b.coerceIn(0f, 1f) * 255f).roundToInt()
-            }
-        }
-        val rnd = java.util.Random(7)
-        val cx = w / 2f; val cy = h / 2f
-        val maxD = sqrt(cx * cx + cy * cy)
-        val doTone = a.highlights != 0f || a.shadows != 0f
-        for (y in 0 until h) {
-            for (x in 0 until w) {
-                val i = y * w + x
-                val c = px[i]
-                var r = ((c shr 16) and 0xFF) / 255f
-                var g = ((c shr 8) and 0xFF) / 255f
-                var b = (c and 0xFF) / 255f
-                val l = 0.299f * r + 0.587f * g + 0.114f * b
-                if (doTone) {
-                    val ws = (1f - l) * (1f - l)
-                    val wh = l * l
-                    val d = a.shadows * 0.35f * ws + a.highlights * 0.35f * wh
-                    r += d; g += d; b += d
-                }
-                if (a.vibrance != 0f) {
-                    val mx = max(r, max(g, b)); val mn = min(r, min(g, b))
-                    val amt = a.vibrance * (1f - (mx - mn)) * 0.8f
-                    val ll = 0.299f * r + 0.587f * g + 0.114f * b
-                    r = ll + (r - ll) * (1f + amt); g = ll + (g - ll) * (1f + amt); b = ll + (b - ll) * (1f + amt)
-                }
-                if (a.vignette > 0f) {
-                    val dx = x - cx; val dy = y - cy
-                    val d = sqrt(dx * dx + dy * dy) / maxD
-                    val t = ((d - 0.35f) / 0.65f).coerceIn(0f, 1f)
-                    val f = 1f - a.vignette * 0.85f * (t * t * (3 - 2 * t))
-                    r *= f; g *= f; b *= f
-                }
-                if (a.grain > 0f) {
-                    val n = (rnd.nextFloat() - 0.5f) * a.grain * 0.22f
-                    r += n; g += n; b += n
-                }
-                px[i] = (c and -0x1000000) or
-                    ((r.coerceIn(0f, 1f) * 255f).roundToInt() shl 16) or
-                    ((g.coerceIn(0f, 1f) * 255f).roundToInt() shl 8) or
-                    (b.coerceIn(0f, 1f) * 255f).roundToInt()
-            }
-        }
-        bmp.setPixels(px, 0, w, 0, 0, w, h)
+    // ---- photo layers
+
+    fun blendMode(b: Blend): BlendMode = when (b) {
+        Blend.Normal -> BlendMode.SRC_OVER; Blend.Screen -> BlendMode.SCREEN; Blend.Multiply -> BlendMode.MULTIPLY
+        Blend.Overlay -> BlendMode.OVERLAY; Blend.SoftLight -> BlendMode.SOFT_LIGHT; Blend.Lighten -> BlendMode.LIGHTEN
+        Blend.Darken -> BlendMode.DARKEN; Blend.Difference -> BlendMode.DIFFERENCE; Blend.Color -> BlendMode.COLOR
+        Blend.Luminosity -> BlendMode.LUMINOSITY
     }
 
-    private fun blurred(src: IntArray, w: Int, h: Int, r: Int): IntArray {
-        var out = boxBlur(src, w, h, r)
-        out = boxBlur(out, w, h, r)
-        return boxBlur(out, w, h, r)
-    }
-
-    /** Fast blur: averages each pixel with its neighbours (run a few times for a smooth result). */
-    private fun boxBlur(src: IntArray, w: Int, h: Int, r: Int): IntArray {
-        val tmp = IntArray(src.size)
-        val out = IntArray(src.size)
-        val div = 2 * r + 1
-        for (y in 0 until h) {
-            var sr = 0; var sg = 0; var sb = 0
-            val row = y * w
-            for (k in -r..r) {
-                val c = src[row + k.coerceIn(0, w - 1)]
-                sr += (c shr 16) and 0xFF; sg += (c shr 8) and 0xFF; sb += c and 0xFF
-            }
-            for (x in 0 until w) {
-                tmp[row + x] = (src[row + x] and -0x1000000) or ((sr / div) shl 16) or ((sg / div) shl 8) or (sb / div)
-                val add = src[row + (x + r + 1).coerceAtMost(w - 1)]
-                val sub = src[row + (x - r).coerceAtLeast(0)]
-                sr += ((add shr 16) and 0xFF) - ((sub shr 16) and 0xFF)
-                sg += ((add shr 8) and 0xFF) - ((sub shr 8) and 0xFF)
-                sb += (add and 0xFF) - (sub and 0xFF)
-            }
+    fun drawPhoto(canvas: Canvas, w: Int, h: Int, l: PhotoLayer, bmp: Bitmap) {
+        val k = l.scale * w / bmp.width
+        val m = Matrix().apply {
+            postTranslate(-bmp.width / 2f, -bmp.height / 2f)
+            postScale(if (l.flip) -k else k, k)
+            postRotate(l.rotation)
+            postTranslate(l.x * w, l.y * h)
         }
-        for (x in 0 until w) {
-            var sr = 0; var sg = 0; var sb = 0
-            for (k in -r..r) {
-                val c = tmp[k.coerceIn(0, h - 1) * w + x]
-                sr += (c shr 16) and 0xFF; sg += (c shr 8) and 0xFF; sb += c and 0xFF
-            }
-            for (y in 0 until h) {
-                out[y * w + x] = (tmp[y * w + x] and -0x1000000) or ((sr / div) shl 16) or ((sg / div) shl 8) or (sb / div)
-                val add = tmp[(y + r + 1).coerceAtMost(h - 1) * w + x]
-                val sub = tmp[(y - r).coerceAtLeast(0) * w + x]
-                sr += ((add shr 16) and 0xFF) - ((sub shr 16) and 0xFF)
-                sg += ((add shr 8) and 0xFF) - ((sub shr 8) and 0xFF)
-                sb += (add and 0xFF) - (sub and 0xFF)
-            }
+        val p = Paint(Paint.FILTER_BITMAP_FLAG or Paint.ANTI_ALIAS_FLAG).apply {
+            alpha = (l.opacity * 255).roundToInt().coerceIn(0, 255)
+            blendMode = blendMode(l.blend)
         }
-        return out
-    }
-
-    private fun sharpen(src: IntArray, w: Int, h: Int, k: Float): IntArray {
-        val out = src.copyOf()
-        for (y in 1 until h - 1) {
-            for (x in 1 until w - 1) {
-                val i = y * w + x
-                val c = src[i]; val n = src[i - w]; val s = src[i + w]; val e = src[i + 1]; val wv = src[i - 1]
-                fun ch(sh: Int): Int {
-                    val v = ((c shr sh) and 0xFF) * (1f + 4f * k) - k * (((n shr sh) and 0xFF) + ((s shr sh) and 0xFF) + ((e shr sh) and 0xFF) + ((wv shr sh) and 0xFF))
-                    return v.roundToInt().coerceIn(0, 255)
-                }
-                out[i] = (c and -0x1000000) or (ch(16) shl 16) or (ch(8) shl 8) or ch(0)
-            }
-        }
-        return out
+        canvas.drawBitmap(bmp, m, p)
     }
 
     // ---- overlays
 
     fun typeface(f: Font): Typeface = when (f) {
-        Font.Sans -> Typeface.DEFAULT
         Font.Bold -> Typeface.create("sans-serif-black", Typeface.NORMAL)
+        Font.Sans -> Typeface.create("sans-serif-medium", Typeface.NORMAL)
+        Font.Light -> Typeface.create("sans-serif-light", Typeface.NORMAL)
+        Font.Condensed -> Typeface.create("sans-serif-condensed", Typeface.BOLD)
         Font.Serif -> Typeface.create(Typeface.SERIF, Typeface.BOLD)
+        Font.Italic -> Typeface.create(Typeface.SERIF, Typeface.BOLD_ITALIC)
         Font.Mono -> Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
         Font.Hand -> Typeface.create("cursive", Typeface.BOLD)
+        Font.Casual -> Typeface.create("casual", Typeface.BOLD)
+        Font.SmallCaps -> Typeface.create("sans-serif-smallcaps", Typeface.BOLD)
     }
 
     fun drawOverlays(canvas: Canvas, w: Int, h: Int, s: EditState) {
         val side = min(w, h).toFloat()
         for (st in s.strokes) drawStroke(canvas, w, h, side, st)
-        for (t in s.texts) {
-            canvas.save(); canvas.rotate(t.rotation, t.x * w, t.y * h)
-            drawText(canvas, w, h, side, t)
-            canvas.restore()
-        }
         val ep = Paint(Paint.ANTI_ALIAS_FLAG).apply { textAlign = Paint.Align.CENTER }
         for (st in s.stickers) {
             ep.textSize = st.size * side
+            ep.alpha = (st.opacity * 255).roundToInt()
             val fm = ep.fontMetrics
-            canvas.save(); canvas.rotate(st.rotation, st.x * w, st.y * h)
+            canvas.save()
+            canvas.rotate(st.rotation, st.x * w, st.y * h)
+            if (st.flip) canvas.scale(-1f, 1f, st.x * w, st.y * h)
             canvas.drawText(st.emoji, st.x * w, st.y * h - (fm.ascent + fm.descent) / 2f, ep)
+            canvas.restore()
+        }
+        for (t in s.texts) {
+            canvas.save(); canvas.rotate(t.rotation, t.x * w, t.y * h)
+            drawText(canvas, w, h, side, t)
             canvas.restore()
         }
     }
 
     private fun drawStroke(canvas: Canvas, w: Int, h: Int, side: Float, st: Stroke) {
         if (st.points.isEmpty() || st.brush == Brush.Eraser) return
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE
+            strokeJoin = Paint.Join.ROUND
+            strokeCap = if (st.brush == Brush.Marker) Paint.Cap.SQUARE else Paint.Cap.ROUND
+            strokeWidth = st.width * side
+            color = st.color
+            alpha = (st.opacity * 255).roundToInt()
+        }
+        val a = st.points.first(); val b = st.points.last()
+        val ax = a.x * w; val ay = a.y * h; val bx = b.x * w; val by = b.y * h
+        if (st.brush.isShape) {
+            when (st.brush) {
+                Brush.Line -> canvas.drawLine(ax, ay, bx, by, paint)
+                Brush.Arrow -> {
+                    canvas.drawLine(ax, ay, bx, by, paint)
+                    val ang = atan2(by - ay, bx - ax)
+                    val len = max(paint.strokeWidth * 3.5f, hypot(bx - ax, by - ay) * 0.18f)
+                    for (d in floatArrayOf(2.6f, -2.6f)) canvas.drawLine(bx, by, bx + len * cos(ang + d), by + len * sin(ang + d), paint)
+                }
+                Brush.Rect -> canvas.drawRoundRect(RectF(min(ax, bx), min(ay, by), max(ax, bx), max(ay, by)), paint.strokeWidth, paint.strokeWidth, paint)
+                else -> canvas.drawOval(RectF(min(ax, bx), min(ay, by), max(ax, bx), max(ay, by)), paint)
+            }
+            return
+        }
         val path = Path()
         st.points.forEachIndexed { i, p ->
             if (i == 0) path.moveTo(p.x * w, p.y * h)
@@ -306,66 +248,91 @@ object Renderer {
             }
         }
         if (st.points.size == 1) path.lineTo(st.points[0].x * w + 0.1f, st.points[0].y * h)
-        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            style = Paint.Style.STROKE
-            strokeJoin = Paint.Join.ROUND
-            strokeCap = if (st.brush == Brush.Marker) Paint.Cap.SQUARE else Paint.Cap.ROUND
-            strokeWidth = st.width * side
-            color = st.color
-        }
         when (st.brush) {
             Brush.Marker -> {
-                paint.alpha = 110
+                paint.alpha = (110 * st.opacity).roundToInt()
                 paint.strokeWidth = st.width * side * 2.2f
                 canvas.drawPath(path, paint)
             }
             Brush.Neon -> {
-                paint.setShadowLayer(st.width * side * 1.6f, 0f, 0f, st.color)
+                paint.maskFilter = BlurMaskFilter(st.width * side * 1.4f, BlurMaskFilter.Blur.NORMAL)
+                paint.strokeWidth = st.width * side * 1.6f
                 canvas.drawPath(path, paint)
-                paint.clearShadowLayer()
-                paint.color = Color.WHITE
-                paint.strokeWidth = st.width * side * 0.35f
+                paint.maskFilter = null
+                paint.color = Color.WHITE; paint.alpha = (255 * st.opacity).roundToInt()
+                paint.strokeWidth = st.width * side * 0.4f
                 canvas.drawPath(path, paint)
+            }
+            Brush.Dashed -> {
+                paint.pathEffect = DashPathEffect(floatArrayOf(paint.strokeWidth * 2.5f, paint.strokeWidth * 2f), 0f)
+                canvas.drawPath(path, paint)
+            }
+            Brush.Spray -> {
+                paint.style = Paint.Style.FILL
+                val rnd = java.util.Random(st.points.size * 31L + (st.points[0].x * 1000).toLong())
+                val r = st.width * side * 2.2f
+                val dot = max(1f, st.width * side * 0.12f)
+                for (i in 1 until st.points.size) {
+                    val p0 = st.points[i - 1]; val p1 = st.points[i]
+                    val n = max(4, (hypot((p1.x - p0.x) * w, (p1.y - p0.y) * h) / r * 26).toInt())
+                    repeat(n) {
+                        val t = rnd.nextFloat()
+                        val cx = (p0.x + (p1.x - p0.x) * t) * w; val cy = (p0.y + (p1.y - p0.y) * t) * h
+                        val ang = rnd.nextFloat() * 6.283f; val d = r * kotlin.math.sqrt(rnd.nextFloat())
+                        canvas.drawCircle(cx + d * cos(ang), cy + d * sin(ang), dot, paint)
+                    }
+                }
             }
             else -> canvas.drawPath(path, paint)
         }
     }
 
+    private fun textPaint(t: TextLayer, size: Float) = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        textSize = size
+        typeface = typeface(t.font)
+        letterSpacing = t.spacing
+        textAlign = when (t.align) { 1 -> Paint.Align.LEFT; 2 -> Paint.Align.RIGHT; else -> Paint.Align.CENTER }
+    }
+
     /** Width and height of a text layer as fractions of the picture's shorter side (for the selection box). */
     fun textBounds(t: TextLayer): Pair<Float, Float> {
-        val p = Paint(Paint.ANTI_ALIAS_FLAG).apply { textSize = t.size * 1000f; typeface = typeface(t.font) }
+        val p = textPaint(t, t.size * 1000f)
         val lines = t.text.split('\n')
         val fm = p.fontMetrics
         val w = (lines.maxOfOrNull { p.measureText(it) } ?: 0f) / 1000f
         val h = (fm.descent - fm.ascent) * lines.size / 1000f
-        return (w + t.size * 0.6f) to (h + t.size * 0.4f)
+        return (w + t.size * 0.7f) to (h + t.size * 0.5f)
     }
 
     private fun drawText(canvas: Canvas, w: Int, h: Int, side: Float, t: TextLayer) {
-        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            textSize = t.size * side
-            color = t.color
-            typeface = typeface(t.font)
-            textAlign = Paint.Align.CENTER
-            if (!t.background) setShadowLayer(textSize * 0.08f, 0f, textSize * 0.03f, 0x66000000)
-        }
+        val paint = textPaint(t, t.size * side)
+        val alpha = (t.opacity * 255).roundToInt().coerceIn(0, 255)
         val lines = t.text.split('\n')
         val fm = paint.fontMetrics
         val lineH = fm.descent - fm.ascent
         val total = lineH * lines.size
         val top = t.y * h - total / 2f
+        val maxW = lines.maxOf { paint.measureText(it) }
+        val cx = t.x * w
+        val x = when (t.align) { 1 -> cx - maxW / 2f; 2 -> cx + maxW / 2f; else -> cx }
+        canvas.saveLayerAlpha(null, alpha)
         if (t.background) {
-            val maxW = lines.maxOf { paint.measureText(it) }
             val pad = paint.textSize * 0.35f
-            val bg = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                color = if (Color.luminance(t.color) > 0.5f) 0xB3000000.toInt() else 0xE6FFFFFF.toInt()
-            }
-            canvas.drawRoundRect(
-                RectF(t.x * w - maxW / 2 - pad, top - pad * 0.6f, t.x * w + maxW / 2 + pad, top + total + pad * 0.6f),
-                pad, pad, bg,
-            )
+            val bg = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = t.bgColor }
+            canvas.drawRoundRect(RectF(cx - maxW / 2 - pad, top - pad * 0.6f, cx + maxW / 2 + pad, top + total + pad * 0.6f), pad, pad, bg)
         }
-        lines.forEachIndexed { i, line -> canvas.drawText(line, t.x * w, top + i * lineH - fm.ascent, paint) }
+        if (t.outline > 0f) {
+            val sp = textPaint(t, t.size * side).apply {
+                style = Paint.Style.STROKE; strokeJoin = Paint.Join.ROUND
+                strokeWidth = t.outline * paint.textSize * 0.25f
+                color = t.outlineColor
+                if (t.shadow && !t.background) setShadowLayer(textSize * 0.08f, 0f, textSize * 0.03f, 0x66000000)
+            }
+            lines.forEachIndexed { i, line -> canvas.drawText(line, x, top + i * lineH - fm.ascent, sp) }
+        } else if (t.shadow && !t.background) paint.setShadowLayer(paint.textSize * 0.08f, 0f, paint.textSize * 0.03f, 0x66000000)
+        paint.color = t.color
+        lines.forEachIndexed { i, line -> canvas.drawText(line, x, top + i * lineH - fm.ascent, paint) }
+        canvas.restore()
     }
 
     private fun drawWatermark(canvas: Canvas, w: Int, h: Int, text: String) {
@@ -380,57 +347,98 @@ object Renderer {
         canvas.drawText(text, w - side * 0.03f, h - side * 0.03f, p)
     }
 
-    fun applyFrame(img: Bitmap, frame: Frame): Bitmap {
+    // ---- frames
+
+    fun applyFrame(img: Bitmap, s: EditState): Bitmap {
+        val frame = s.frame
         if (frame == Frame.None) return img
         val side = min(img.width, img.height).toFloat()
-        val (l, t, r, b, color) = when (frame) {
-            Frame.ThinWhite -> Quint(0.03f, 0.03f, 0.03f, 0.03f, Color.WHITE)
-            Frame.ThickWhite -> Quint(0.08f, 0.08f, 0.08f, 0.08f, Color.WHITE)
-            Frame.Black -> Quint(0.06f, 0.06f, 0.06f, 0.06f, Color.BLACK)
-            Frame.Polaroid -> Quint(0.05f, 0.05f, 0.05f, 0.20f, 0xFFFAFAF7.toInt())
-            Frame.Rounded -> Quint(0.04f, 0.04f, 0.04f, 0.04f, Color.WHITE)
-            Frame.None -> Quint(0f, 0f, 0f, 0f, 0)
+        val k = s.f(Params.frameSize)
+        val color = s.frameColor
+        val fp = Paint(Paint.FILTER_BITMAP_FLAG or Paint.ANTI_ALIAS_FLAG)
+        fun pad(l: Float, t: Float, r: Float, b: Float, draw: (Canvas, RectF) -> Unit): Bitmap {
+            val out = Bitmap.createBitmap((img.width + (l + r) * side).roundToInt(), (img.height + (t + b) * side).roundToInt(), Bitmap.Config.ARGB_8888)
+            val c = Canvas(out)
+            c.drawColor(color)
+            draw(c, RectF(l * side, t * side, l * side + img.width, t * side + img.height))
+            return out
         }
-        val out = Bitmap.createBitmap(
-            (img.width + (l + r) * side).roundToInt(), (img.height + (t + b) * side).roundToInt(), Bitmap.Config.ARGB_8888,
-        )
-        val c = Canvas(out)
-        c.drawColor(color)
-        val dst = RectF(l * side, t * side, l * side + img.width, t * side + img.height)
-        if (frame == Frame.Rounded) {
-            val clip = Path().apply { addRoundRect(dst, side * 0.06f, side * 0.06f, Path.Direction.CW) }
-            c.save(); c.clipPath(clip); c.drawBitmap(img, null, dst, Paint(Paint.FILTER_BITMAP_FLAG)); c.restore()
-        } else {
-            c.drawBitmap(img, null, dst, Paint(Paint.FILTER_BITMAP_FLAG))
+        return when (frame) {
+            Frame.Thin -> { val b = 0.008f + 0.05f * k; pad(b, b, b, b) { c, r -> c.drawBitmap(img, null, r, fp) } }
+            Frame.Gallery -> { val b = 0.04f + 0.14f * k; pad(b, b, b, b) { c, r -> c.drawBitmap(img, null, r, fp) } }
+            Frame.Polaroid -> { val b = 0.03f + 0.05f * k; pad(b, b, b, b * 4f) { c, r -> c.drawBitmap(img, null, r, fp) } }
+            Frame.Rounded -> {
+                val b = 0.02f + 0.06f * k
+                pad(b, b, b, b) { c, r ->
+                    c.save(); c.clipPath(Path().apply { addRoundRect(r, side * 0.06f, side * 0.06f, Path.Direction.CW) })
+                    c.drawBitmap(img, null, r, fp); c.restore()
+                }
+            }
+            Frame.Shadow -> {
+                val b = 0.06f + 0.1f * k
+                pad(b, b, b, b) { c, r ->
+                    val sh = Paint(Paint.ANTI_ALIAS_FLAG).apply { this.color = 0x66000000; maskFilter = BlurMaskFilter(side * 0.03f, BlurMaskFilter.Blur.NORMAL) }
+                    c.drawRect(RectF(r.left, r.top + side * 0.015f, r.right, r.bottom + side * 0.025f), sh)
+                    c.drawBitmap(img, null, r, fp)
+                }
+            }
+            Frame.Square, Frame.BlurFit -> {
+                val big = max(img.width, img.height).toFloat()
+                val margin = big * 0.12f * k
+                val size = (big + 2 * margin).roundToInt()
+                val out = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+                val c = Canvas(out)
+                if (frame == Frame.BlurFit) {
+                    // Blurred, slightly darker copy of the photo behind it.
+                    val tiny = Bitmap.createScaledBitmap(img, max(1, img.width / 24), max(1, img.height / 24), true)
+                    val px = IntArray(tiny.width * tiny.height); tiny.getPixels(px, 0, tiny.width, 0, 0, tiny.width, tiny.height)
+                    val bl = Pixels.box(px, tiny.width, tiny.height, 2, 3)
+                    tiny.setPixels(bl, 0, tiny.width, 0, 0, tiny.width, tiny.height)
+                    val cover = max(size.toFloat() / tiny.width, size.toFloat() / tiny.height)
+                    val bw = tiny.width * cover; val bh = tiny.height * cover
+                    c.drawBitmap(tiny, null, RectF((size - bw) / 2, (size - bh) / 2, (size + bw) / 2, (size + bh) / 2),
+                        Paint(Paint.FILTER_BITMAP_FLAG).apply { colorFilter = ColorMatrixColorFilter(scale(0.8f, 0.8f, 0.8f, 0f)) })
+                } else c.drawColor(color)
+                val l = (size - img.width) / 2f; val t = (size - img.height) / 2f
+                c.drawBitmap(img, null, RectF(l, t, l + img.width, t + img.height), fp)
+                out
+            }
+            Frame.Film -> {
+                val b = 0.13f + 0.05f * k
+                val out = Bitmap.createBitmap((img.width + 0.04f * side).roundToInt(), (img.height + 2 * b * side).roundToInt(), Bitmap.Config.ARGB_8888)
+                val c = Canvas(out)
+                c.drawColor(0xFF111111.toInt())
+                val r = RectF(0.02f * side, b * side, 0.02f * side + img.width, b * side + img.height)
+                c.drawBitmap(img, null, r, fp)
+                val hole = Paint(Paint.ANTI_ALIAS_FLAG).apply { this.color = 0xFFEDEDED.toInt() }
+                val hw = side * 0.045f; val hh = side * 0.06f
+                var x = hw * 0.6f
+                while (x < out.width - hw) {
+                    for (yc in floatArrayOf(b * side / 2f, out.height - b * side / 2f)) c.drawRoundRect(RectF(x, yc - hh / 2, x + hw, yc + hh / 2), hw * 0.25f, hw * 0.25f, hole)
+                    x += hw * 2f
+                }
+                out
+            }
+            Frame.None -> img
         }
-        return out
     }
 
-    private data class Quint(val a: Float, val b: Float, val c: Float, val d: Float, val e: Int)
-
-    /** One-tap fix: looks at how bright and punchy the picture is and nudges it towards balanced. */
-    fun autoEnhance(bmp: Bitmap): Adjust {
+    /** One-tap fix for the Tune tool. */
+    fun autoEnhance(bmp: Bitmap): List<Pair<Param, Float>> {
         val small = Bitmap.createScaledBitmap(bmp, 64, (64f * bmp.height / bmp.width).roundToInt().coerceAtLeast(1), true)
         val px = IntArray(small.width * small.height)
         small.getPixels(px, 0, small.width, 0, 0, small.width, small.height)
-        var sum = 0f; var sumSq = 0f; var sat = 0f
-        for (c in px) {
-            val r = ((c shr 16) and 0xFF) / 255f; val g = ((c shr 8) and 0xFF) / 255f; val b = (c and 0xFF) / 255f
-            val l = 0.299f * r + 0.587f * g + 0.114f * b
-            sum += l; sumSq += l * l
-            sat += max(r, max(g, b)) - min(r, min(g, b))
+        return Pixels.auto(px)
+    }
+
+    /** Colour under a point of a picture (averaged over a small square). */
+    fun sample(bmp: Bitmap, x: Float, y: Float): Int {
+        val cx = (x * bmp.width).roundToInt().coerceIn(0, bmp.width - 1); val cy = (y * bmp.height).roundToInt().coerceIn(0, bmp.height - 1)
+        var r = 0; var g = 0; var b = 0; var n = 0
+        for (dy in -2..2) for (dx in -2..2) {
+            val c = bmp.getPixel((cx + dx).coerceIn(0, bmp.width - 1), (cy + dy).coerceIn(0, bmp.height - 1))
+            r += Color.red(c); g += Color.green(c); b += Color.blue(c); n++
         }
-        val n = px.size.toFloat()
-        val mean = sum / n
-        val sd = sqrt((sumSq / n - mean * mean).coerceAtLeast(0f))
-        val avgSat = sat / n
-        return Adjust(
-            exposure = ((0.48f - mean) * 1.4f).coerceIn(-0.6f, 0.6f),
-            contrast = ((0.22f - sd) * 2.2f).coerceIn(-0.2f, 0.45f),
-            shadows = if (mean < 0.4f) 0.35f else 0.12f,
-            highlights = if (mean > 0.6f) -0.35f else -0.12f,
-            vibrance = ((0.30f - avgSat) * 2f).coerceIn(0f, 0.5f),
-            sharpen = 0.15f,
-        )
+        return Color.rgb(r / n, g / n, b / n)
     }
 }

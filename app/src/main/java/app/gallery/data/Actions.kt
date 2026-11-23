@@ -106,18 +106,26 @@ object Actions {
     }
 
     /** Saves a picture you edited as a new photo. Returns its address. */
-    fun saveBitmap(c: Context, bmp: Bitmap, baseName: String, takenAt: Long?): Uri? {
-        val name = baseName.substringBeforeLast('.') + "_edited_" + System.currentTimeMillis() / 1000 + ".jpg"
+    fun saveBitmap(
+        c: Context, bmp: Bitmap, baseName: String, takenAt: Long?,
+        format: Bitmap.CompressFormat = Bitmap.CompressFormat.JPEG, quality: Int = 95,
+    ): Uri? {
+        val (ext, mime) = when (format) {
+            Bitmap.CompressFormat.PNG -> "png" to "image/png"
+            Bitmap.CompressFormat.JPEG -> "jpg" to "image/jpeg"
+            else -> "webp" to "image/webp"
+        }
+        val name = baseName.substringBeforeLast('.') + "_edited_" + System.currentTimeMillis() / 1000 + "." + ext
         val v = ContentValues().apply {
             put(MediaStore.MediaColumns.DISPLAY_NAME, name)
-            put(MediaStore.MediaColumns.MIME_TYPE, "image/jpeg")
+            put(MediaStore.MediaColumns.MIME_TYPE, mime)
             put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/Edited/")
             put(MediaStore.MediaColumns.DATE_TAKEN, takenAt ?: System.currentTimeMillis())
             put(MediaStore.MediaColumns.IS_PENDING, 1)
         }
         val uri = c.contentResolver.insert(MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY), v) ?: return null
         return try {
-            c.contentResolver.openOutputStream(uri)!!.use { bmp.compress(Bitmap.CompressFormat.JPEG, 95, it) }
+            c.contentResolver.openOutputStream(uri)!!.use { bmp.compress(format, quality, it) }
             c.contentResolver.update(uri, ContentValues().apply { put(MediaStore.MediaColumns.IS_PENDING, 0) }, null, null)
             MediaRepo.refreshSoon()
             uri
