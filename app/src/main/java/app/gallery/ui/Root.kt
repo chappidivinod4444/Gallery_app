@@ -59,6 +59,8 @@ sealed interface Route {
     data object Trash : Route
     data object Videos : Route
     data class VaultViewer(val start: Int) : Route
+    data class Virtual(val kind: String) : Route
+    data class PickInto(val name: String) : Route
 }
 
 object Nav {
@@ -143,6 +145,8 @@ fun GalleryRoot() {
                         Route.Trash -> TrashScreen()
                         Route.Videos -> VideosScreen()
                         is Route.VaultViewer -> VaultViewer(r.start)
+                        is Route.Virtual -> VirtualScreen(r.kind)
+                        is Route.PickInto -> PickIntoScreen(r.name)
                     }
                 }
             }

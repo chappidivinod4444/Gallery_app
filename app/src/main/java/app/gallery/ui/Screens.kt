@@ -42,6 +42,13 @@ import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.Videocam
 import androidx.compose.material.icons.rounded.GridView
+import androidx.compose.material.icons.rounded.Tune
+import androidx.compose.material.icons.rounded.Check
+import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.Collections
+import androidx.compose.material.icons.rounded.Image
+import androidx.compose.material.icons.rounded.FavoriteBorder
+import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.FilterList
 import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.Lock
@@ -92,7 +99,9 @@ import coil3.compose.AsyncImage
 import java.time.format.DateTimeFormatter
 import java.util.Locale
 
-enum class PhotoFilter(val label: String) { All("All items"), Photos("Photos only"), Videos("Videos only"), Favorites("Favourites") }
+enum class PhotoFilter(val label: String) {
+    Photos("Photos"), Videos("Videos"), Screenshots("Screenshots"), Favorites("Favourites"), Edited("Edited"), All("All")
+}
 
 @Composable
 fun MainScreen(tab: Tab, onAskAccess: () -> Unit) {
@@ -103,12 +112,16 @@ fun MainScreen(tab: Tab, onAskAccess: () -> Unit) {
     val favIds by Favorites.ids.collectAsState()
     val videosInPhotos by Settings.showVideosInPhotos.collectAsState()
     var filter by remember { mutableStateOf(PhotoFilter.All) }
+    var albumSort by remember { mutableStateOf(AlbumSort.Recent) }
+    var newAlbum by remember { mutableStateOf(false) }
     val visible = when (tab) {
         Tab.Photos -> when (filter) {
             PhotoFilter.All -> if (videosInPhotos) all else all.filter { !it.isVideo }
             PhotoFilter.Photos -> all.filter { !it.isVideo }
             PhotoFilter.Videos -> all.filter { it.isVideo }
             PhotoFilter.Favorites -> all.filter { it.id in favIds }
+            PhotoFilter.Screenshots -> all.filter { it.isScreenshot }
+            PhotoFilter.Edited -> all.filter { it.relativePath.contains("Edited", true) || it.name.contains("_edited", true) }
         }
         Tab.Favorites -> all.filter { it.id in favIds }
         else -> emptyList()
@@ -116,27 +129,43 @@ fun MainScreen(tab: Tab, onAskAccess: () -> Unit) {
     Box(Modifier.fillMaxSize()) {
         when (tab) {
             Tab.Photos -> PhotosTab(visible, selection, filter, onAskAccess)
-            Tab.Albums -> AlbumsTab(all)
+            Tab.Albums -> AlbumsPage(all, albumSort)
             Tab.Favorites -> FavoritesTab(visible, selection)
             Tab.Vault -> VaultTab()
         }
         if (selection.active) Box(Modifier.align(Alignment.TopCenter)) { SelectionTopBar(selection, visible) }
         Box(Modifier.align(Alignment.BottomCenter).fillMaxWidth()) {
             if (selection.active) Box(Modifier.align(Alignment.Center)) { SelectionActions(selection) }
-            else if (!(tab == Tab.Vault && VaultSelection.map.isNotEmpty())) BottomChrome(tab, filter) { filter = it }
+            else if (!(tab == Tab.Vault && VaultSelection.map.isNotEmpty())) BottomChrome(tab, filter, albumSort, { filter = it }, { albumSort = it }, { newAlbum = true })
         }
     }
+    if (newAlbum) NewAlbumDialog(onDismiss = { newAlbum = false }) { name -> newAlbum = false; Nav.go(Route.PickInto(name)) }
 }
 
 /** Bottom of the main screen, OnePlus-style: grid size · Photos | Albums · filter. */
 @Composable
-private fun BottomChrome(tab: Tab, filter: PhotoFilter, onFilter: (PhotoFilter) -> Unit) {
+private fun BottomChrome(
+    tab: Tab, filter: PhotoFilter, sort: AlbumSort,
+    onFilter: (PhotoFilter) -> Unit, onSort: (AlbumSort) -> Unit, onNewAlbum: () -> Unit,
+) {
     var menu by remember { mutableStateOf(false) }
+    var sortMenu by remember { mutableStateOf(false) }
     Row(
         Modifier.fillMaxWidth().navigationBarsPadding().padding(start = 16.dp, end = 16.dp, bottom = 14.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        RoundButton(Icons.Rounded.GridView, "Grid size", visible = tab == Tab.Photos || tab == Tab.Favorites) {
+        if (tab == Tab.Albums) Box {
+            RoundButton(Icons.Rounded.Tune, "Sort albums") { sortMenu = true }
+            androidx.compose.material3.DropdownMenu(sortMenu, { sortMenu = false }, shape = RoundedCornerShape(20.dp)) {
+                AlbumSort.entries.forEach { o ->
+                    androidx.compose.material3.DropdownMenuItem(
+                        text = { Text(o.label) },
+                        trailingIcon = { if (o == sort) Icon(Icons.Rounded.Check, null, tint = MaterialTheme.colorScheme.primary) },
+                        onClick = { sortMenu = false; onSort(o) },
+                    )
+                }
+            }
+        } else RoundButton(Icons.Rounded.GridView, "Grid size", visible = tab == Tab.Photos || tab == Tab.Favorites) {
             // Cycle through comfortable sizes: 3 → 5 → 7 → 15 → 3
             val next = when (Settings.columns.value) { in 0..3 -> 5; in 4..5 -> 7; in 6..10 -> 15; else -> 3 }
             Settings.setColumns(next)
@@ -159,13 +188,25 @@ private fun BottomChrome(tab: Tab, filter: PhotoFilter, onFilter: (PhotoFilter) 
             }
         }
         Spacer(Modifier.weight(1f))
-        Box {
+        if (tab == Tab.Albums) RoundButton(Icons.Rounded.Add, "New album", onClick = onNewAlbum)
+        else Box {
             RoundButton(Icons.Rounded.FilterList, "Filter", visible = tab == Tab.Photos, highlighted = filter != PhotoFilter.All) { menu = true }
-            androidx.compose.material3.DropdownMenu(menu, { menu = false }) {
+            androidx.compose.material3.DropdownMenu(
+                menu, { menu = false }, shape = RoundedCornerShape(26.dp),
+                containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+            ) {
                 PhotoFilter.entries.forEach { f ->
+                    val icon = when (f) {
+                        PhotoFilter.All -> Icons.Rounded.Collections; PhotoFilter.Photos -> Icons.Rounded.Image
+                        PhotoFilter.Videos -> Icons.Rounded.Videocam; PhotoFilter.Favorites -> Icons.Rounded.FavoriteBorder
+                        PhotoFilter.Screenshots -> Icons.Rounded.Screenshot; PhotoFilter.Edited -> Icons.Rounded.Edit
+                    }
                     androidx.compose.material3.DropdownMenuItem(
-                        text = { Text(f.label, fontWeight = if (f == filter) FontWeight.Bold else FontWeight.Normal) },
+                        text = { Text(f.label, style = MaterialTheme.typography.titleMedium, color = if (f == filter) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface) },
+                        leadingIcon = { Icon(icon, null, tint = if (f == filter) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface) },
+                        trailingIcon = { if (f == filter) Icon(Icons.Rounded.Check, null, tint = MaterialTheme.colorScheme.primary) },
                         onClick = { menu = false; onFilter(f) },
+                        contentPadding = PaddingValues(horizontal = 20.dp, vertical = 6.dp),
                     )
                 }
             }
@@ -244,7 +285,7 @@ private fun PhotosTab(list: List<Media>, selection: Selection, filter: PhotoFilt
                 EmptyState(Icons.Rounded.PhotoLibrary, if (filter == PhotoFilter.All) "No photos yet" else "Nothing here", "Photos and videos you take or save will show up here.")
             }
         })
-        if (!selection.active) FloatingTitle(if (filter == PhotoFilter.All || filter == PhotoFilter.Photos) "Photos" else filter.label.substringBefore(" ")) { MoreMenu() }
+        if (!selection.active) FloatingTitle(if (filter == PhotoFilter.All) "Photos" else filter.label) { MoreMenu() }
     }
 }
 
@@ -340,7 +381,7 @@ fun BackTitle(title: String, subtitle: String? = null, actions: @Composable () -
 }
 
 @Composable
-private fun ListScreen(title: String, list: List<Media>, empty: @Composable () -> Unit = {}) {
+fun SimpleList(title: String, list: List<Media>, empty: @Composable () -> Unit = {}) {
     val selection = remember { Selection() }
     BackHandler(enabled = selection.active) { selection.clear() }
     Box(Modifier.fillMaxSize()) {
@@ -358,7 +399,7 @@ private fun ListScreen(title: String, list: List<Media>, empty: @Composable () -
 @Composable
 fun AlbumScreen(id: Long, name: String) {
     val all by MediaRepo.all.collectAsState()
-    ListScreen(name, remember(all, id) { all.filter { it.bucketId == id } }) {
+    SimpleList(name, remember(all, id) { all.filter { it.bucketId == id } }) {
         EmptyState(Icons.Rounded.Folder, "This album is empty", "")
     }
 }
@@ -366,7 +407,7 @@ fun AlbumScreen(id: Long, name: String) {
 @Composable
 fun VideosScreen() {
     val all by MediaRepo.all.collectAsState()
-    ListScreen("Videos", remember(all) { all.filter { it.isVideo } }) {
+    SimpleList("Videos", remember(all) { all.filter { it.isVideo } }) {
         EmptyState(Icons.Rounded.Videocam, "No videos", "Videos you record or save show up here.")
     }
 }
@@ -511,54 +552,67 @@ fun SettingsScreen() {
     val activity = LocalContext.current as androidx.fragment.app.FragmentActivity
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 40.dp)) {
         item { BackTitle("Settings") }
+        item { Section("Browsing") }
+        item {
+            Card {
+                Choice("Photos per row", listOf("3", "4", "5", "7", "10"), listOf(3, 4, 5, 7, 10).indexOf(columns).coerceAtLeast(0)) {
+                    Settings.setColumns(listOf(3, 4, 5, 7, 10)[it])
+                }
+                Toggle("Show videos in Photos", null, videos) { Settings.setVideosInPhotos(it) }
+            }
+        }
         item { Section("Look") }
         item {
-            Choice("Theme", listOf("System", "Light", "Dark"), theme.ordinal) { Settings.setTheme(Settings.ThemeMode.entries[it]) }
+            Card {
+                Choice("Theme", listOf("System", "Light", "Dark"), theme.ordinal) { Settings.setTheme(Settings.ThemeMode.entries[it]) }
+                Toggle("Colours from your wallpaper", "Material You", dynamic) { Settings.setDynamic(it) }
+                Toggle("Pure black dark mode", "Saves battery on OLED screens", amoled) { Settings.setAmoled(it) }
+            }
         }
-        item { Toggle("Colours from your wallpaper", "Material You", dynamic) { Settings.setDynamic(it) } }
-        item { Toggle("Pure black dark mode", "Saves battery on OLED screens", amoled) { Settings.setAmoled(it) } }
-        item { Choice("Photos per row", listOf("2", "3", "4", "5", "6", "7"), columns - 2) { Settings.setColumns(it + 2) } }
-        item { Toggle("Show videos in Photos", null, videos) { Settings.setVideosInPhotos(it) } }
         item { Section("Privacy & security") }
         item {
-            Toggle("App lock", "Fingerprint, face or screen lock to open Gallery", lock) { on ->
-                if (!on) {
-                    AppLock.prompt(activity, "Turn off app lock", onOk = { Settings.setAppLock(false) })
-                } else if (!AppLock.canUse(activity)) {
-                    Toast.makeText(activity, "Set up a screen lock or fingerprint on your phone first", Toast.LENGTH_LONG).show()
-                } else {
-                    AppLock.prompt(activity, "Turn on app lock", onOk = { Settings.setAppLock(true) })
+            Card {
+                Toggle("App lock", "Fingerprint, face or screen lock to open Gallery", lock) { on ->
+                    if (!on) {
+                        AppLock.prompt(activity, "Turn off app lock", onOk = { Settings.setAppLock(false) })
+                    } else if (!AppLock.canUse(activity)) {
+                        Toast.makeText(activity, "Set up a screen lock or fingerprint on your phone first", Toast.LENGTH_LONG).show()
+                    } else {
+                        AppLock.prompt(activity, "Turn on app lock", onOk = { Settings.setAppLock(true) })
+                    }
                 }
-            }
-        }
-        if (lock) {
-            item {
-                Choice("Lock again after", listOf("Right away", "1 min", "5 min", "15 min"), listOf(0, 60, 300, 900).indexOf(lockAfter).coerceAtLeast(0)) {
-                    Settings.setLockAfter(listOf(0, 60, 300, 900)[it])
+                if (lock) {
+                    Choice("Lock again after", listOf("Right away", "1 min", "5 min", "15 min"), listOf(0, 60, 300, 900).indexOf(lockAfter).coerceAtLeast(0)) {
+                        Settings.setLockAfter(listOf(0, 60, 300, 900)[it])
+                    }
+                    Toggle("Hide content in recent apps", "Also blocks screenshots", secure) { Settings.setSecure(it) }
                 }
+                ListRow(null, "Vault", null, "Encrypted private album") { Nav.tab(Tab.Vault) }
             }
-            item { Toggle("Hide content in recent apps", "Also blocks screenshots", secure) { Settings.setSecure(it) } }
         }
         item {
             Text(
                 "The Vault always asks to unlock, is always hidden from screenshots, and closes when you leave the app. " +
                     "This app has no internet permission: nothing ever leaves your phone.",
-                style = Caption, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp),
+                style = Caption, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(horizontal = 28.dp, vertical = 10.dp),
             )
         }
-        item { Section("About") }
+        item { Section("More") }
         item {
             val version = remember {
                 runCatching { activity.packageManager.getPackageInfo(activity.packageName, 0).versionName }.getOrDefault("?")
             }
-            Text("Gallery $version", modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Card {
+                ListRow(null, "Recently deleted", null) { Nav.go(Route.Trash) }
+                ListRow(null, "About Gallery", version) {}
+            }
         }
     }
 }
 
 @Composable
 private fun Section(t: String) {
-    Text(t, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(start = 20.dp, top = 22.dp, bottom = 6.dp))
+    Text(t, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(start = 32.dp, top = 24.dp, bottom = 10.dp))
 }
 
 @Composable

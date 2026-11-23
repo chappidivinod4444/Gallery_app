@@ -31,6 +31,7 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.gestures.calculatePan
 import androidx.compose.foundation.gestures.calculateZoom
+import androidx.compose.foundation.gestures.calculateRotation
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.foundation.layout.width
@@ -313,10 +314,13 @@ private fun EditorContent(media: Media) {
             return Offset(p.x.coerceIn(-mx, mx), p.y.coerceIn(-my, my))
         }
         val panWithOneFinger = tool == Tool.Adjust || tool == Tool.Filters || tool == Tool.Effects || tool == Tool.Frame
+        // With a text or sticker picked, pinching resizes it instead of zooming the picture.
+        val layerPicked = (tool == Tool.Text && selectedText != null) || (tool == Tool.Stickers && selectedSticker != null)
         Box(
             Modifier.weight(1f).fillMaxWidth().clipToBounds()
                 .onSizeChanged { areaSize = it }
-                .pointerInput(panWithOneFinger) {
+                .pointerInput(panWithOneFinger, layerPicked) {
+                    if (layerPicked) return@pointerInput
                     awaitEachGesture {
                         var multi = false
                         while (true) {
@@ -400,48 +404,65 @@ private fun EditorContent(media: Media) {
 
                     Tool.Text, Tool.Stickers -> Box(
                         Modifier.fillMaxSize()
-                            .pointerInput(tool, state.texts, state.stickers) {
-                                detectTapGestures { o ->
-                                    val p = norm(o)
-                                    if (tool == Tool.Text) selectedText = state.texts.minByOrNull { hypot(it.x - p.x, it.y - p.y) }?.takeIf { hypot(it.x - p.x, it.y - p.y) < 0.15f }?.id
-                                    else selectedSticker = state.stickers.minByOrNull { hypot(it.x - p.x, it.y - p.y) }?.takeIf { hypot(it.x - p.x, it.y - p.y) < 0.15f }?.id
+                            // Touch a text or sticker to pick it; drag to move, pinch to resize, twist to rotate.
+                            .pointerInput(tool, left, top, dw, dh) {
+                                awaitEachGesture {
+                                    val first = awaitFirstDown()
+                                    val p0 = norm(first.position)
+                                    val side = min(dw, dh)
+                                    if (tool == Tool.Text) {
+                                        val hit = state.texts.lastOrNull { t ->
+                                            val (bw, bh) = Renderer.textBounds(t)
+                                            abs(p0.x - t.x) * dw < bw * side / 2 + 24 && abs(p0.y - t.y) * dh < bh * side / 2 + 24
+                                        }
+                                        selectedText = hit?.id
+                                    } else {
+                                        val hit = state.stickers.lastOrNull { st -> hypot((p0.x - st.x) * dw, (p0.y - st.y) * dh) < st.size * side * 0.7f + 24 }
+                                        selectedSticker = hit?.id
+                                    }
+                                    val id = if (tool == Tool.Text) selectedText else selectedSticker
+                                    if (id == null) return@awaitEachGesture
+                                    first.consume()
+                                    val before = state
+                                    while (true) {
+                                        val ev = awaitPointerEvent()
+                                        if (ev.changes.none { it.pressed }) break
+                                        val z = ev.calculateZoom(); val r = ev.calculateRotation(); val pan = ev.calculatePan()
+                                        val dx = pan.x / dw; val dy = pan.y / dh
+                                        state = if (tool == Tool.Text) state.copy(texts = state.texts.map {
+                                            if (it.id == id) it.copy(
+                                                x = (it.x + dx).coerceIn(0f, 1f), y = (it.y + dy).coerceIn(0f, 1f),
+                                                size = (it.size * z).coerceIn(0.015f, 0.5f), rotation = it.rotation + r,
+                                            ) else it
+                                        }) else state.copy(stickers = state.stickers.map {
+                                            if (it.id == id) it.copy(
+                                                x = (it.x + dx).coerceIn(0f, 1f), y = (it.y + dy).coerceIn(0f, 1f),
+                                                size = (it.size * z).coerceIn(0.03f, 1.2f), rotation = it.rotation + r,
+                                            ) else it
+                                        })
+                                        ev.changes.forEach { it.consume() }
+                                    }
+                                    if (before != state) { undo.add(before); redo.clear() }
                                 }
                             }
-                            .pointerInput(tool, selectedText, selectedSticker) {
-                                var before: EditState? = null
-                                detectDragGestures(
-                                    onDragStart = { o ->
-                                        before = state
-                                        val p = norm(o)
-                                        if (tool == Tool.Text) {
-                                            state.texts.minByOrNull { hypot(it.x - p.x, it.y - p.y) }?.let { selectedText = it.id }
-                                        } else {
-                                            state.stickers.minByOrNull { hypot(it.x - p.x, it.y - p.y) }?.let { selectedSticker = it.id }
-                                        }
-                                    },
-                                    onDrag = { ch, d ->
-                                        ch.consume()
-                                        val dx = d.x / dw; val dy = d.y / dh
-                                        state = if (tool == Tool.Text) state.copy(texts = state.texts.map {
-                                            if (it.id == selectedText) it.copy(x = (it.x + dx).coerceIn(0f, 1f), y = (it.y + dy).coerceIn(0f, 1f)) else it
-                                        }) else state.copy(stickers = state.stickers.map {
-                                            if (it.id == selectedSticker) it.copy(x = (it.x + dx).coerceIn(0f, 1f), y = (it.y + dy).coerceIn(0f, 1f)) else it
-                                        })
-                                    },
-                                    onDragEnd = { before?.let { if (it != state) { undo.add(it); redo.clear() } } },
-                                )
-                            }
                     ) {
-                        // Outline around the selected text or sticker.
-                        val sel: Pair<P, Float>? = if (tool == Tool.Text) state.texts.firstOrNull { it.id == selectedText }?.let { P(it.x, it.y) to it.size * 2.2f }
-                        else state.stickers.firstOrNull { it.id == selectedSticker }?.let { P(it.x, it.y) to it.size * 1.3f }
+                        // Box around the selected text or sticker (turns with it).
+                        val side = min(dw, dh)
+                        val sel: Triple<P, androidx.compose.ui.geometry.Size, Float>? = if (tool == Tool.Text) {
+                            state.texts.firstOrNull { it.id == selectedText }?.let { t ->
+                                val (bw, bh) = Renderer.textBounds(t)
+                                Triple(P(t.x, t.y), androidx.compose.ui.geometry.Size(bw * side, bh * side), t.rotation)
+                            }
+                        } else state.stickers.firstOrNull { it.id == selectedSticker }?.let { st ->
+                            Triple(P(st.x, st.y), androidx.compose.ui.geometry.Size(st.size * side * 1.25f, st.size * side * 1.25f), st.rotation)
+                        }
                         if (sel != null) {
-                            val side = min(dw, dh)
-                            val sz = sel.second * side
+                            val (c, sz, rot) = sel
                             Box(
-                                Modifier.offset { IntOffset((left + sel.first.x * dw - sz).roundToInt(), (top + sel.first.y * dh - sz / 2).roundToInt()) }
-                                    .size(with(density) { (sz * 2).toDp() }, with(density) { sz.toDp() })
-                                    .border(1.5.dp, Color(0xCCFFFFFF), RoundedCornerShape(8.dp))
+                                Modifier.offset { IntOffset((left + c.x * dw - sz.width / 2).roundToInt(), (top + c.y * dh - sz.height / 2).roundToInt()) }
+                                    .size(with(density) { sz.width.toDp() }, with(density) { sz.height.toDp() })
+                                    .graphicsLayer { rotationZ = rot }
+                                    .border(1.5.dp, Color(0xE6FFFFFF), RoundedCornerShape(6.dp))
                             )
                         }
                     }
@@ -829,7 +850,7 @@ private fun TextPanel(
                 Slider(value = t.size, valueRange = 0.025f..0.2f, onValueChange = { onChange(t.copy(size = it)) }, modifier = Modifier.weight(1f).padding(start = 12.dp))
             }
         } else Text(
-            "Add text, then drag it on the picture to place it. Tap a text to change it.",
+            "Add text. Drag it to move, pinch to resize, twist with two fingers to rotate. Tap a text to change it.",
             style = Caption, color = Color(0xAAFFFFFF), modifier = Modifier.padding(horizontal = 16.dp),
         )
     }

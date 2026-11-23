@@ -46,9 +46,10 @@ data class TextLayer(
     val color: Int = 0xFFFFFFFF.toInt(),
     val font: Font = Font.Bold,
     val background: Boolean = false,
+    val rotation: Float = 0f,
 )
 
-data class Sticker(val id: Long, val emoji: String, val x: Float, val y: Float, val size: Float = 0.16f)
+data class Sticker(val id: Long, val emoji: String, val x: Float, val y: Float, val size: Float = 0.16f, val rotation: Float = 0f)
 
 enum class Frame { None, ThinWhite, ThickWhite, Black, Polaroid, Rounded }
 

@@ -280,12 +280,18 @@ object Renderer {
     fun drawOverlays(canvas: Canvas, w: Int, h: Int, s: EditState) {
         val side = min(w, h).toFloat()
         for (st in s.strokes) drawStroke(canvas, w, h, side, st)
-        for (t in s.texts) drawText(canvas, w, h, side, t)
+        for (t in s.texts) {
+            canvas.save(); canvas.rotate(t.rotation, t.x * w, t.y * h)
+            drawText(canvas, w, h, side, t)
+            canvas.restore()
+        }
         val ep = Paint(Paint.ANTI_ALIAS_FLAG).apply { textAlign = Paint.Align.CENTER }
         for (st in s.stickers) {
             ep.textSize = st.size * side
             val fm = ep.fontMetrics
+            canvas.save(); canvas.rotate(st.rotation, st.x * w, st.y * h)
             canvas.drawText(st.emoji, st.x * w, st.y * h - (fm.ascent + fm.descent) / 2f, ep)
+            canvas.restore()
         }
     }
 
@@ -323,6 +329,16 @@ object Renderer {
             }
             else -> canvas.drawPath(path, paint)
         }
+    }
+
+    /** Width and height of a text layer as fractions of the picture's shorter side (for the selection box). */
+    fun textBounds(t: TextLayer): Pair<Float, Float> {
+        val p = Paint(Paint.ANTI_ALIAS_FLAG).apply { textSize = t.size * 1000f; typeface = typeface(t.font) }
+        val lines = t.text.split('\n')
+        val fm = p.fontMetrics
+        val w = (lines.maxOfOrNull { p.measureText(it) } ?: 0f) / 1000f
+        val h = (fm.descent - fm.ascent) * lines.size / 1000f
+        return (w + t.size * 0.6f) to (h + t.size * 0.4f)
     }
 
     private fun drawText(canvas: Canvas, w: Int, h: Int, side: Float, t: TextLayer) {
