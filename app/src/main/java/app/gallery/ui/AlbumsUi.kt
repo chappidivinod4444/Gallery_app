@@ -30,6 +30,7 @@ import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.Gif
 import androidx.compose.material.icons.rounded.Lock
+import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.Panorama
 import androidx.compose.material.icons.rounded.PhotoSizeSelectLarge
 import androidx.compose.material.icons.rounded.Videocam
@@ -175,7 +176,7 @@ fun AlbumsPage(all: List<Media>, sort: AlbumSort) {
 private fun AlbumsMenu() {
     var open by remember { mutableStateOf(false) }
     Box {
-        RoundButton(androidx.compose.material.icons.Icons.Rounded.MoreVert, "More") { open = true }
+        RoundButton(Icons.Rounded.MoreVert, "More") { open = true }
         androidx.compose.material3.DropdownMenu(open, { open = false }, shape = RoundedCornerShape(20.dp)) {
             androidx.compose.material3.DropdownMenuItem(text = { Text("Settings") }, onClick = { open = false; Nav.go(Route.Settings) })
         }
