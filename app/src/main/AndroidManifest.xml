@@ -10,6 +10,8 @@
     <uses-permission android:name="android.permission.USE_BIOMETRIC" />
     <!-- Shows where a photo was taken in its details. -->
     <uses-permission android:name="android.permission.ACCESS_MEDIA_LOCATION" />
+    <!-- Optional, off until you turn on "Show folders other apps hid": lets the app look inside folders hidden with .nomedia. -->
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" tools:ignore="ScopedStorage" />
 
     <application
         android:name=".GalleryApp"
@@ -49,5 +51,13 @@
                 <data android:mimeType="image/*" />
             </intent-filter>
         </activity>
+        <!-- Shares pictures from hidden folders with other apps without exposing file paths. -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.files"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml/file_paths" />
+        </provider>
     </application>
 </manifest>

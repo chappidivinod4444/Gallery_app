@@ -114,9 +114,11 @@ fun MainScreen(tab: Tab, onAskAccess: () -> Unit) {
     var filter by remember { mutableStateOf(PhotoFilter.All) }
     var albumSort by remember { mutableStateOf(AlbumSort.Recent) }
     var newAlbum by remember { mutableStateOf(false) }
-    val visible = when (tab) {
+    val outOfPhotos by app.gallery.data.Folders.notInPhotos.collectAsState()
+    // Worked out once per change (not on every redraw) so the grid stays smooth.
+    val visible = remember(tab, filter, all, favIds, videosInPhotos, outOfPhotos) { when (tab) {
         Tab.Photos -> when (filter) {
-            PhotoFilter.All -> if (videosInPhotos) all else all.filter { !it.isVideo }
+            PhotoFilter.All -> all.filter { (videosInPhotos || !it.isVideo) && it.bucketId !in outOfPhotos }
             PhotoFilter.Photos -> all.filter { !it.isVideo }
             PhotoFilter.Videos -> all.filter { it.isVideo }
             PhotoFilter.Favorites -> all.filter { it.id in favIds }
@@ -125,7 +127,7 @@ fun MainScreen(tab: Tab, onAskAccess: () -> Unit) {
         }
         Tab.Favorites -> all.filter { it.id in favIds }
         else -> emptyList()
-    }
+    } }
     Box(Modifier.fillMaxSize()) {
         when (tab) {
             Tab.Photos -> PhotosTab(visible, selection, filter, onAskAccess)
@@ -398,7 +400,7 @@ fun SimpleList(title: String, list: List<Media>, empty: @Composable () -> Unit =
 
 @Composable
 fun AlbumScreen(id: Long, name: String) {
-    val all by MediaRepo.all.collectAsState()
+    val all by MediaRepo.everything.collectAsState()
     SimpleList(name, remember(all, id) { all.filter { it.bucketId == id } }) {
         EmptyState(Icons.Rounded.Folder, "This album is empty", "")
     }
@@ -559,6 +561,7 @@ fun SettingsScreen() {
                     Settings.setColumns(listOf(3, 4, 5, 7, 10)[it])
                 }
                 Toggle("Show videos in Photos", null, videos) { Settings.setVideosInPhotos(it) }
+                ListRow(null, "Folders", null, "Choose which folders show, hidden folders") { Nav.go(Route.ManageFolders) }
             }
         }
         item { Section("Look") }

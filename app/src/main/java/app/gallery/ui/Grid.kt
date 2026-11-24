@@ -314,7 +314,7 @@ fun MediaGrid(
                 }
                 is GridRow.Cell -> MediaCell(
                     r.m, selected = r.m.id in selection.map, selecting = selection.active, fav = r.m.id in favs,
-                    thumbPx = when { columns <= 2 -> 640; columns <= 4 -> 384; columns <= 7 -> 256; else -> 160 },
+                    thumbPx = when { columns <= 2 -> 640; columns <= 3 -> 384; columns <= 5 -> 320; columns <= 7 -> 192; else -> 128 },
                     compact = columns >= 7,
                     modifier = Modifier.animateItem(),
                     onClick = { if (selection.active) selection.toggle(r.m) else Nav.open(list, r.index) },

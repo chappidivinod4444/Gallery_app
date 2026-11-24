@@ -30,7 +30,9 @@ class GalleryApp : Application() {
         super.onCreate()
         Settings.init(this)
         Favorites.init(this)
+        app.gallery.data.Folders.init(this)
         MediaRepo.init(this)
+        Thread { app.gallery.data.ThumbCache.trim(this) }.start()
         Vault.init(this)
         SingletonImageLoader.setSafe { ctx ->
             coil3.ImageLoader.Builder(ctx)
@@ -40,7 +42,9 @@ class GalleryApp : Application() {
                     add(VaultThumbFetcher.Factory())
                     add(VaultThumbKeyer())
                 }
-                .crossfade(180)
+                // Pictures appear immediately (no fade), and a good share of memory keeps scrolling smooth.
+                .crossfade(false)
+                .memoryCache { coil3.memory.MemoryCache.Builder().maxSizePercent(ctx, 0.3).build() }
                 .build()
         }
         AppLock.onAppStart()

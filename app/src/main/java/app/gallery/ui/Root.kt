@@ -61,6 +61,9 @@ sealed interface Route {
     data class VaultViewer(val start: Int) : Route
     data class Virtual(val kind: String) : Route
     data class PickInto(val name: String) : Route
+    data object ManageFolders : Route
+    data object HiddenFolders : Route
+    data class HiddenAppFolder(val id: Long, val name: String) : Route
 }
 
 object Nav {
@@ -116,7 +119,7 @@ fun GalleryRoot() {
     var access by remember { mutableStateOf(hasAnyAccess(context)) }
     val ask = rememberPermissionAsker {
         access = hasAnyAccess(context)
-        MediaRepo.refresh()
+        MediaRepo.refresh(force = true)
     }
     LaunchedEffect(access) { if (access) MediaRepo.refresh() }
 
@@ -148,6 +151,9 @@ fun GalleryRoot() {
                         is Route.VaultViewer -> VaultViewer(r.start)
                         is Route.Virtual -> VirtualScreen(r.kind)
                         is Route.PickInto -> PickIntoScreen(r.name)
+                        Route.ManageFolders -> ManageFoldersScreen()
+                        Route.HiddenFolders -> HiddenFoldersScreen()
+                        is Route.HiddenAppFolder -> HiddenAppFolderScreen(r.id, r.name)
                     }
                 }
             }

@@ -60,3 +60,60 @@ object Favorites {
         p.edit().putStringSet("ids", ids.value.map { it.toString() }.toSet()).apply()
     }
 }
+
+/** Which folders show where. Hidden folders disappear from Photos and Albums (still on the phone, see "Hidden folders"). */
+object Folders {
+    private lateinit var p: SharedPreferences
+    /** Hidden everywhere. */
+    val hidden = MutableStateFlow<Set<Long>>(emptySet())
+    /** Still an album, but its pictures stay out of the Photos timeline (e.g. WhatsApp, Screenshots). */
+    val notInPhotos = MutableStateFlow<Set<Long>>(emptySet())
+    /** Pinned to the top of Albums, in this order. */
+    val pinned = MutableStateFlow<List<Long>>(emptyList())
+    /** Also look for folders other apps hid from the gallery (.nomedia). Needs "All files access". */
+    val showNomedia = MutableStateFlow(false)
+
+    fun init(c: Context) {
+        p = c.getSharedPreferences("folders", Context.MODE_PRIVATE)
+        hidden.value = p.getString("hidden", "")!!.split(',').mapNotNull { it.toLongOrNull() }.toSet()
+        notInPhotos.value = p.getString("notInPhotos", "")!!.split(',').mapNotNull { it.toLongOrNull() }.toSet()
+        pinned.value = p.getString("pinned", "")!!.split(',').mapNotNull { it.toLongOrNull() }
+        showNomedia.value = p.getBoolean("nomedia", false)
+    }
+
+    private fun save() {
+        p.edit()
+            .putString("hidden", hidden.value.joinToString(","))
+            .putString("notInPhotos", notInPhotos.value.joinToString(","))
+            .putString("pinned", pinned.value.joinToString(","))
+            .putBoolean("nomedia", showNomedia.value)
+            .apply()
+    }
+
+    fun setVisible(id: Long, visible: Boolean) {
+        hidden.value = if (visible) hidden.value - id else hidden.value + id
+        if (!visible) pinned.value = pinned.value - id
+        save(); MediaRepo.publish()
+    }
+    fun setVisible(ids: Collection<Long>, visible: Boolean) {
+        hidden.value = if (visible) hidden.value - ids.toSet() else hidden.value + ids
+        if (!visible) pinned.value = pinned.value - ids.toSet()
+        save(); MediaRepo.publish()
+    }
+    fun setInPhotos(id: Long, inPhotos: Boolean) {
+        notInPhotos.value = if (inPhotos) notInPhotos.value - id else notInPhotos.value + id
+        save()
+    }
+    fun setPinned(id: Long, pin: Boolean) {
+        pinned.value = if (pin) (pinned.value - id) + id else pinned.value - id
+        save()
+    }
+    fun move(id: Long, by: Int) {
+        val l = pinned.value.toMutableList()
+        val i = l.indexOf(id); if (i < 0) return
+        val j = (i + by).coerceIn(0, l.lastIndex)
+        l.removeAt(i); l.add(j, id)
+        pinned.value = l; save()
+    }
+    fun setShowNomedia(v: Boolean) { showNomedia.value = v; save(); MediaRepo.refresh(force = true) }
+}

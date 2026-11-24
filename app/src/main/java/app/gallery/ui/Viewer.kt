@@ -112,7 +112,7 @@ fun Immersive(hidden: Boolean) {
 @OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
 @Composable
 fun ViewerScreen(list: List<Media>, start: Int) {
-    val live by MediaRepo.all.collectAsState()
+    val live by MediaRepo.everything.collectAsState()
     // Keep the list in step with deletions while viewing.
     val items = remember(live, list) { val ids = live.map { it.id }.toHashSet(); list.filter { it.id < 0 || it.id in ids } }
     if (items.isEmpty()) { LaunchedEffect(Unit) { Nav.back() }; return }

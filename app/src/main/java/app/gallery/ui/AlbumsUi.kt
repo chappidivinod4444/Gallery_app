@@ -51,6 +51,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.material.icons.rounded.Tune
+import androidx.compose.material.icons.rounded.VisibilityOff
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
@@ -109,21 +112,25 @@ fun AlbumsPage(all: List<Media>, sort: AlbumSort) {
     val camera = folders.firstOrNull { it.name.equals("Camera", true) }
     val shots = folders.firstOrNull { it.name.contains("screenshot", true) }
     val others = folders.filter { it != camera && it != shots }
-    val pinnedFolders = others.take(4)
-    val moreFolders = others.drop(4)
+    // Your own pins come first (Albums → long-press, or Settings → Folders); otherwise the biggest recent folders.
+    val myPins by app.gallery.data.Folders.pinned.collectAsState()
+    val hiddenIds by app.gallery.data.Folders.hidden.collectAsState()
+    val pinnedFolders = if (myPins.isNotEmpty()) myPins.mapNotNull { id -> others.firstOrNull { it.id == id } } else others.take(4)
+    val moreFolders = others.filter { it !in pinnedFolders }
+    var sheet by remember { mutableStateOf<app.gallery.data.Album?>(null) }
     val favList = remember(all, favs) { all.filter { it.id in favs } }
     val videos = remember(all) { all.filter { it.isVideo } }
 
-    data class Tile(val name: String, val count: Int, val covers: List<Media>, val open: () -> Unit)
+    data class Tile(val name: String, val count: Int, val covers: List<Media>, val album: app.gallery.data.Album? = null, val open: () -> Unit)
     val pinned = buildList {
-        camera?.let { a -> add(Tile(a.name, a.count, listOf(a.cover)) { Nav.go(Route.AlbumView(a.id, a.name)) }) }
+        camera?.let { a -> add(Tile(a.name, a.count, listOf(a.cover), a) { Nav.go(Route.AlbumView(a.id, a.name)) }) }
         add(Tile("Videos", videos.size, videos.take(1)) { Nav.go(Route.Virtual(Smart.Videos.name)) })
         add(Tile("Favourites", favList.size, favList.take(1)) { Nav.go(Route.Virtual(Smart.Favourites.name)) })
-        pinnedFolders.forEach { a -> add(Tile(a.name, a.count, listOf(a.cover)) { Nav.go(Route.AlbumView(a.id, a.name)) }) }
+        pinnedFolders.forEach { a -> add(Tile(a.name, a.count, listOf(a.cover), a) { Nav.go(Route.AlbumView(a.id, a.name)) }) }
         add(Tile("Recent", all.size, all.take(4)) { Nav.go(Route.Virtual(Smart.Recent.name)) })
         shots?.let { a ->
             val list = all.filter { it.bucketId == a.id }.take(4)
-            add(Tile(a.name, a.count, list) { Nav.go(Route.AlbumView(a.id, a.name)) })
+            add(Tile(a.name, a.count, list, a) { Nav.go(Route.AlbumView(a.id, a.name)) })
         }
     }
     val top = WindowInsets.statusBars.asPaddingValues().calculateTopPadding() + 96.dp
@@ -133,7 +140,7 @@ fun AlbumsPage(all: List<Media>, sort: AlbumSort) {
             item { SectionTitle("Pinned") }
             items(pinned.chunked(3)) { row ->
                 Row(Modifier.padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-                    row.forEach { t -> AlbumTile(t.name, t.count, t.covers, Modifier.weight(1f), t.open) }
+                    row.forEach { t -> AlbumTile(t.name, t.count, t.covers, Modifier.weight(1f), onLongClick = t.album?.let { a -> { sheet = a } }, onClick = t.open) }
                     repeat(3 - row.size) { Spacer(Modifier.weight(1f)) }
                 }
                 Spacer(Modifier.height(18.dp))
@@ -143,7 +150,7 @@ fun AlbumsPage(all: List<Media>, sort: AlbumSort) {
                 item {
                     LazyRow(contentPadding = PaddingValues(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
                         items(moreFolders, key = { it.id }) { a ->
-                            AlbumTile(a.name, a.count, listOf(a.cover), Modifier.width(118.dp)) { Nav.go(Route.AlbumView(a.id, a.name)) }
+                            AlbumTile(a.name, a.count, listOf(a.cover), Modifier.width(118.dp), onLongClick = { sheet = a }) { Nav.go(Route.AlbumView(a.id, a.name)) }
                         }
                     }
                 }
@@ -165,10 +172,22 @@ fun AlbumsPage(all: List<Media>, sort: AlbumSort) {
                     ListRow(Icons.Rounded.Lock, "Vault", "Private") { Nav.tab(Tab.Vault) }
                     HorizontalDivider(Modifier.padding(start = 64.dp, end = 20.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
                     ListRow(Icons.Rounded.Delete, "Recently deleted", count(trash.size)) { Nav.go(Route.Trash) }
+                    HorizontalDivider(Modifier.padding(start = 64.dp, end = 20.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+                    ListRow(Icons.Rounded.VisibilityOff, "Hidden folders", count(hiddenIds.size)) { Nav.go(Route.HiddenFolders) }
+                    HorizontalDivider(Modifier.padding(start = 64.dp, end = 20.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+                    ListRow(Icons.Rounded.Tune, "Manage folders", null, "Choose what shows, pin, reorder") { Nav.go(Route.ManageFolders) }
                 }
+            }
+            item {
+                Text(
+                    "Tip: long-press an album to hide it, pin it, or keep it out of Photos.",
+                    style = Caption, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 28.dp, vertical = 14.dp),
+                )
             }
         }
         FloatingTitle("Albums") { AlbumsMenu() }
+        sheet?.let { a -> FolderSheet(a) { sheet = null } }
     }
 }
 
@@ -178,6 +197,8 @@ private fun AlbumsMenu() {
     Box {
         RoundButton(Icons.Rounded.MoreVert, "More") { open = true }
         androidx.compose.material3.DropdownMenu(open, { open = false }, shape = RoundedCornerShape(20.dp)) {
+            androidx.compose.material3.DropdownMenuItem(text = { Text("Manage folders") }, onClick = { open = false; Nav.go(Route.ManageFolders) })
+            androidx.compose.material3.DropdownMenuItem(text = { Text("Hidden folders") }, onClick = { open = false; Nav.go(Route.HiddenFolders) })
             androidx.compose.material3.DropdownMenuItem(text = { Text("Settings") }, onClick = { open = false; Nav.go(Route.Settings) })
         }
     }
@@ -190,8 +211,9 @@ private fun SectionTitle(t: String) {
 
 /** Rounded square cover (or a 2×2 collage) with the name and count under it. */
 @Composable
-fun AlbumTile(name: String, count: Int, covers: List<Media>, modifier: Modifier, onClick: () -> Unit) {
-    Column(modifier.clip(RoundedCornerShape(26.dp)).clickable(onClick = onClick), horizontalAlignment = Alignment.CenterHorizontally) {
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+fun AlbumTile(name: String, count: Int, covers: List<Media>, modifier: Modifier, onLongClick: (() -> Unit)? = null, onClick: () -> Unit) {
+    Column(modifier.clip(RoundedCornerShape(26.dp)).combinedClickable(onClick = onClick, onLongClick = onLongClick), horizontalAlignment = Alignment.CenterHorizontally) {
         Box(
             Modifier.fillMaxWidth().aspectRatio(1f).clip(RoundedCornerShape(26.dp)).background(MaterialTheme.colorScheme.surfaceContainerHigh),
         ) {

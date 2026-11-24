@@ -12,15 +12,19 @@ import android.provider.MediaStore
 /** Things you can do with photos: share, trash, delete, move, copy, rename, set as wallpaper. */
 object Actions {
 
+    /** Files from hidden folders are handed to other apps through a safe content link, never a raw file path. */
+    fun shareable(c: Context, uri: Uri): Uri =
+        if (uri.scheme == "file") androidx.core.content.FileProvider.getUriForFile(c, c.packageName + ".files", java.io.File(uri.path!!)) else uri
+
     fun share(c: Context, items: List<Media>) {
         if (items.isEmpty()) return
         val intent = if (items.size == 1) {
-            Intent(Intent.ACTION_SEND).setType(items[0].mime).putExtra(Intent.EXTRA_STREAM, items[0].uri)
+            Intent(Intent.ACTION_SEND).setType(items[0].mime).putExtra(Intent.EXTRA_STREAM, shareable(c, items[0].uri))
         } else {
             val types = items.map { it.mime.substringBefore('/') }.distinct()
             Intent(Intent.ACTION_SEND_MULTIPLE)
                 .setType(if (types.size == 1) "${types[0]}/*" else "*/*")
-                .putParcelableArrayListExtra(Intent.EXTRA_STREAM, ArrayList(items.map { it.uri }))
+                .putParcelableArrayListExtra(Intent.EXTRA_STREAM, ArrayList(items.map { shareable(c, it.uri) }))
         }
         intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         c.startActivity(Intent.createChooser(intent, null).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
@@ -137,14 +141,14 @@ object Actions {
 
     /** "Set as" (wallpaper, contact photo…) through Android's own screen: no extra permission. */
     fun setAs(c: Context, m: Media) {
-        val i = Intent(Intent.ACTION_ATTACH_DATA).setDataAndType(m.uri, m.mime)
+        val i = Intent(Intent.ACTION_ATTACH_DATA).setDataAndType(shareable(c, m.uri), m.mime)
             .putExtra("mimeType", m.mime).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         c.startActivity(Intent.createChooser(i, "Set as").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
     }
 
     /** Opens the picture in another app chosen by you. */
     fun openWith(c: Context, m: Media) {
-        val i = Intent(Intent.ACTION_VIEW).setDataAndType(m.uri, m.mime).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        val i = Intent(Intent.ACTION_VIEW).setDataAndType(shareable(c, m.uri), m.mime).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         c.startActivity(Intent.createChooser(i, "Open with").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
     }
 }

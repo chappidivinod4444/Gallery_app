@@ -44,15 +44,25 @@ data class Media(
 /** A folder of photos (what the phone calls a "bucket"). */
 data class Album(val id: Long, val name: String, val cover: Media, val count: Int, val path: String)
 
-/** Reads every photo and video through Android's media index and keeps it up to date. */
+/**
+ * Reads every photo and video through Android's media index and keeps it up to date.
+ * The last list is saved on the phone, so the app opens instantly; then it checks for changes in the background.
+ */
 object MediaRepo {
+    /** Everything except hidden folders — what the app normally shows. */
     val all = MutableStateFlow<List<Media>>(emptyList())
+    /** Everything, including hidden folders. */
+    val everything = MutableStateFlow<List<Media>>(emptyList())
+    /** Pictures in folders other apps hid from galleries (.nomedia). Only filled when turned on. */
+    val nomedia = MutableStateFlow<List<Media>>(emptyList())
     val trash = MutableStateFlow<List<Media>>(emptyList())
     val loaded = MutableStateFlow(false)
 
     private lateinit var app: Context
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var pending: Job? = null
+    private var lastGeneration = -1L
+    private val lock = Any()
 
     fun init(context: Context) {
         app = context.applicationContext
@@ -61,6 +71,22 @@ object MediaRepo {
         }
         app.contentResolver.registerContentObserver(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, true, observer)
         app.contentResolver.registerContentObserver(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, true, observer)
+        // Show the saved list straight away.
+        scope.launch {
+            val cached = MediaCache.read(app)
+            if (cached != null && everything.value.isEmpty()) {
+                everything.value = cached
+                publish()
+                loaded.value = true
+            }
+        }
+    }
+
+    /** Recomputes [all] from [everything] after folders are hidden or shown. */
+    fun publish() {
+        val hidden = Folders.hidden.value
+        val list = everything.value
+        all.value = if (hidden.isEmpty()) list else list.filter { it.bucketId !in hidden }
     }
 
     /** Several changes often arrive together (a burst of photos): wait a moment and reload once. */
@@ -68,16 +94,39 @@ object MediaRepo {
         pending?.cancel()
         pending = scope.launch {
             delay(400)
-            refresh()
+            load(force = true)
         }
     }
 
-    fun refresh() {
-        scope.launch {
-            all.value = query(trashed = false)
-            loaded.value = true
-            trash.value = query(trashed = true)
+    /** Reloads if anything changed since last time ([force] = reload anyway). */
+    fun refresh(force: Boolean = false) {
+        scope.launch { load(force) }
+    }
+
+    private fun generation(): Long = runCatching {
+        MediaStore.getExternalVolumeNames(app).sumOf { MediaStore.getGeneration(app, it) } +
+            MediaStore.getExternalVolumeNames(app).sumOf { MediaStore.getVersion(app, it).hashCode().toLong() }
+    }.getOrDefault(-2L)
+
+    private fun load(force: Boolean) {
+        synchronized(lock) {
+            val gen = generation()
+            val unchanged = !force && gen >= 0 && gen == lastGeneration && loaded.value && everything.value.isNotEmpty()
+            if (!unchanged) {
+                val list = query(trashed = false)
+                lastGeneration = gen
+                if (list != everything.value) {
+                    everything.value = list
+                    publish()
+                    MediaCache.write(app, list)
+                }
+                loaded.value = true
+                trash.value = query(trashed = true)
+            }
         }
+        if (Folders.showNomedia.value && HiddenScan.allowed()) {
+            if (force || nomedia.value.isEmpty()) nomedia.value = HiddenScan.scan()
+        } else nomedia.value = emptyList()
     }
 
     private fun query(trashed: Boolean): List<Media> {
